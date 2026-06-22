@@ -63,7 +63,7 @@ Work is tracked as issues in [`.beads/`](.beads/) (the
 ```
 ARCHITECTURE.md        Design, science, decisions log, and roadmap (start here)
 .beads/                Issue tracker (JSONL is the source of truth)
-data/                  Seed training data (hand-labeled traces) - publication pending
+data/                  Seed training data (hand-labeled traces) + manifest [CC-BY-4.0]
 ```
 
 ## The science, briefly
@@ -85,8 +85,8 @@ geoscience community.
 
 ## License
 
-[GPL-3.0](LICENSE) - consistent with the QGIS plugin ecosystem.
-
-> Note on data: the project uses hand-created trace labels for three regions
-> (Canada, Nepal, Pakistan). Their provenance and an appropriate data license are
-> being finalised before publication.
+- **Code:** [GPL-3.0](LICENSE) - consistent with the QGIS plugin ecosystem.
+- **Seed data** (`data/`): [CC-BY-4.0](data/LICENSE) - original interpretive trace
+  labels for Canada, Nepal, and Pakistan, digitised over public remote-sensing
+  data. See [`data/NOTICE.md`](data/NOTICE.md) for attribution and
+  [`data/DATA_MANIFEST.md`](data/DATA_MANIFEST.md) for provenance.
