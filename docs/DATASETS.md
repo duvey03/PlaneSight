@@ -55,6 +55,21 @@ license, often CC-BY).
 1. **Convention normalization.** GeMS stores strike as `Azimuth` (RHR); Macrostrat/GA/GSC each use different field names and some store dip-direction not strike. Build a converter and parse each source's glossary - this is the main data-cleaning hazard.
 2. **Scale-aware validation.** Map-digitized points carry symbol-level positional/orientation generalization. Weight by `OrientationConfidenceDegrees`/`certainty`/`PlotAtScale`; do not validate fine DEM-derived dips against coarse map symbols. For field-precision validation prefer GNSS-located sets (Svalbox, WAROX, GA field DB).
 
+## Corroboration & additions (second independent scan)
+
+A second independent research pass agreed on the core picks (Macrostrat, GA, USGS
+GeMS, OpenTopography, BGS) and the StraboSpot license caution, adding:
+
+- **Geoscience Australia - Surface Geology 1:1M** (CC-BY-4.0) - national contact
+  and fault **lines** (product 74619). A trace-label source for training (coarse
+  scale; pair with finer state maps where possible).
+- **OpenStreetMap geology** (CC-BY-**SA**) - community bedrock linework; the
+  share-alike clause is viral, so only use if we accept SA on derived products.
+  Coverage is patchy. Treat as last resort.
+- Reconfirmed: **BGS Geology 625k** linework is OGL (usable), but BGS DiGMapGB-50
+  and detailed 1:50k products are restricted; **e-Rock / V3Geo** virtual outcrops
+  carry per-model licenses (some CC-BY-NC) - check each.
+
 ## Recommended first moves
 - **Validation harness:** pull Macrostrat (API) + Geoscience Australia (WFS) for broad coverage, plus **Svalbox Konusdalen West** as the high-precision benchmark.
 - **Plane-fit unit tests:** use the MethodsX synthetic cylinder data alongside our own synthetic-plane DEM (D14).
