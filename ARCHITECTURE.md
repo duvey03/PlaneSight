@@ -297,6 +297,16 @@ including the dip-direction downslope sign correction in 6.2 step 5, a classic
 bug nest. This is a **hard gate within Phase 3**, ahead of (not part of) the
 parallel field-benchmark workstream.
 
+**Status: PASSED (synthetic-geometry portion).** `fit_plane` is implemented
+(`planesight/core/attitude/plane_fit.py`) and validated in
+`tests/test_plane_fit.py`: exact recovery of dip/dip-direction/strike across a
+range of attitudes, the downslope sign, and the two metrics behaving -
+conditioning flags a straight down-dip trace with 866 m of relief as
+unconstrained (conditioning ~1e-32), and planarity flags folded traces. Pulled
+forward as an early spike (it does not depend on the detector). Still to do:
+propagate the DEM-vertical-error budget into reported uncertainty (S6.4), run on
+a sampled real-DEM trace, and add windowed fits (S6.5).
+
 ### 6.7 Known limitations
 
 - Assumes the trace samples a single, locally-planar feature. Folded/polyphase
