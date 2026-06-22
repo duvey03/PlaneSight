@@ -153,6 +153,60 @@ def least_cloudy(items: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     """Return the item with the lowest eo:cloud_cover (ties broken by order)."""
     if not items:
         raise StacError("no items to choose from")
-    return min(
-        items, key=lambda i: i.get("properties", {}).get("eo:cloud_cover", 100.0)
-    )
+    return min(items, key=cloud_cover)
+
+
+def cloud_cover(item: Dict[str, Any]) -> float:
+    """Return a STAC item's eo:cloud_cover percent (100.0 if missing)."""
+    return float(item.get("properties", {}).get("eo:cloud_cover", 100.0))
+
+
+def item_month(item: Dict[str, Any]) -> int:
+    """Return the acquisition month (1-12) from a STAC item's datetime."""
+    dt = item.get("properties", {}).get("datetime", "")
+    # RFC3339 "YYYY-MM-DDT..." -> month is characters 5:7
+    return int(dt[5:7])
+
+
+def monthly_cloud_stats(items: Sequence[Dict[str, Any]]) -> Dict[int, Dict[str, float]]:
+    """Aggregate items by acquisition month into clarity stats.
+
+    Returns ``{month: {"n": count, "min": min_cloud, "median": median_cloud}}``.
+    Pure - useful for reporting a locality's seasonal clarity.
+    """
+    from statistics import median
+
+    buckets: Dict[int, List[float]] = {}
+    for it in items:
+        buckets.setdefault(item_month(it), []).append(cloud_cover(it))
+    return {
+        m: {"n": len(v), "min": min(v), "median": median(v)}
+        for m, v in buckets.items()
+    }
+
+
+def clearest_months(
+    items: Sequence[Dict[str, Any]], top_n: int = 3, max_cloud: float = 5.0
+) -> List[int]:
+    """Empirically identify a locality's clear (dry) season.
+
+    Ranks months by how many near-clear scenes (<= ``max_cloud``) they contain;
+    the busiest clear months are this AOI's dry season - no climate model needed.
+    Returns up to ``top_n`` month numbers, clearest first.
+    """
+    counts: Dict[int, int] = {}
+    for it in items:
+        if cloud_cover(it) <= max_cloud:
+            counts[item_month(it)] = counts.get(item_month(it), 0) + 1
+    return sorted(counts, key=lambda m: (-counts[m], m))[:top_n]
+
+
+def pick_scene(
+    items: Sequence[Dict[str, Any]],
+    prefer_months: Optional[Sequence[int]] = None,
+) -> Dict[str, Any]:
+    """Choose the best scene: prefer ``prefer_months``, then lowest cloud."""
+    if not items:
+        raise StacError("no scenes to pick from")
+    pm = set(prefer_months or [])
+    return min(items, key=lambda it: (0 if item_month(it) in pm else 1, cloud_cover(it)))

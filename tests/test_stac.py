@@ -7,12 +7,25 @@ import pytest
 from planesight.core.data import (
     StacError,
     asset_href,
+    clearest_months,
     least_cloudy,
+    monthly_cloud_stats,
+    pick_scene,
+    search_clear_sentinel2,
     search_items,
     to_vsicurl,
 )
 from planesight.core.data.sources import EARTH_SEARCH_V1
-from planesight.core.data.stac import _normalize_datetime
+from planesight.core.data.stac import _normalize_datetime, item_month
+
+
+def _scene(id_, month, cloud):
+    """Build a minimal STAC item for selection tests."""
+    return {
+        "id": id_,
+        "properties": {"datetime": f"2023-{month:02d}-15T06:00:00Z", "eo:cloud_cover": cloud},
+        "assets": {"red": {"href": f"https://x/{id_}.tif"}},
+    }
 
 
 class _FakeResp:
@@ -155,6 +168,53 @@ def test_datetime_normalized_in_request_body():
         opener=_opener_from_pages(pages, captured),
     )
     assert captured[0]["datetime"] == "2023-11-01T00:00:00Z/2024-03-31T23:59:59Z"
+
+
+def test_clearest_months_finds_dry_season():
+    # Dec/Jan have several near-clear scenes; Jul is cloudy -> dry season = Dec, Jan
+    items = [
+        _scene("a", 12, 2.0), _scene("b", 12, 4.0), _scene("c", 1, 3.0),
+        _scene("d", 7, 60.0), _scene("e", 7, 70.0), _scene("f", 1, 1.0),
+    ]
+    dry = clearest_months(items, top_n=2, max_cloud=5.0)
+    assert dry == [1, 12] or dry == [12, 1]  # both have 2 clear scenes; order by count then month
+    stats = monthly_cloud_stats(items)
+    assert stats[7]["n"] == 2 and stats[7]["min"] == 60.0
+
+
+def test_pick_scene_prefers_months_then_cloud():
+    items = [
+        _scene("dry-clearish", 12, 4.0),
+        _scene("wet-clearest", 7, 0.5),  # lower cloud but wrong season
+        _scene("dry-clearest", 12, 1.0),
+    ]
+    # prefer December: should pick the clearest December scene, not the clearer July one
+    assert pick_scene(items, prefer_months=[12])["id"] == "dry-clearest"
+    # with no month preference, pick the globally clearest
+    assert pick_scene(items)["id"] == "wet-clearest"
+    assert item_month(items[0]) == 12
+
+
+def test_search_clear_sentinel2_escalates_when_too_cloudy():
+    clear_items = [_scene("ok", 12, 8.0)]
+
+    def opener(req, timeout=None):
+        thr = json.loads(req.data.decode())["query"]["eo:cloud_cover"]["lt"]
+        # nothing under 5%, but scenes appear once the cap reaches >=10%
+        return _FakeResp({"features": clear_items if thr >= 10 else [], "links": []})
+
+    items, used = search_clear_sentinel2([0, 0, 1, 1], cloud_max=5.0, opener=opener)
+    assert used == 10.0 and [i["id"] for i in items] == ["ok"]
+
+
+def test_search_clear_sentinel2_no_escalation_returns_empty():
+    def opener(req, timeout=None):
+        return _FakeResp({"features": [], "links": []})
+
+    items, used = search_clear_sentinel2(
+        [0, 0, 1, 1], cloud_max=5.0, escalate=False, opener=opener
+    )
+    assert items == [] and used == 5.0
 
 
 def test_to_vsicurl_mapping():

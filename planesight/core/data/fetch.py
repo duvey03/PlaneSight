@@ -9,10 +9,20 @@ the single least-cloudy scene as a first pass.
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence
+import logging
+from typing import Dict, List, Optional, Sequence, Tuple
 
-from .sources import COP_DEM_ASSET, COP_DEM_GLO_30, EARTH_SEARCH_V1, SENTINEL2_L2A
-from .stac import StacError, asset_href, least_cloudy, search_items
+from .sources import (
+    CLOUD_CEILING,
+    COP_DEM_ASSET,
+    COP_DEM_GLO_30,
+    DEFAULT_MAX_CLOUD,
+    EARTH_SEARCH_V1,
+    SENTINEL2_L2A,
+)
+from .stac import StacError, asset_href, clearest_months, item_month, pick_scene, search_items
+
+logger = logging.getLogger("planesight.core.data")
 
 BBox = Sequence[float]  # (minx, miny, maxx, maxy) in WGS84 lon/lat
 
@@ -84,30 +94,95 @@ def fetch_dem(
     return fetch_clip(hrefs, bbox, out_path, resampling="bilinear")
 
 
+def _escalation_thresholds(cloud_max: float, ceiling: float) -> List[float]:
+    """Cloud thresholds to try in turn: start strict, double up to the ceiling."""
+    thresholds = [cloud_max]
+    t = cloud_max
+    while t < ceiling:
+        t = min(t * 2, ceiling)
+        thresholds.append(t)
+    return thresholds
+
+
+def search_clear_sentinel2(
+    bbox: BBox,
+    cloud_max: float = DEFAULT_MAX_CLOUD,
+    datetime: Optional[str] = None,
+    escalate: bool = True,
+    cloud_ceiling: float = CLOUD_CEILING,
+    catalog_url: str = EARTH_SEARCH_V1,
+    opener=None,
+) -> Tuple[List[Dict], float]:
+    """Find near-clear Sentinel-2 L2A scenes, escalating the cloud cap if needed.
+
+    Tries scenes with cloud cover < ``cloud_max`` first. If none exist in the
+    window and ``escalate`` is True, the cap is raised stepwise (doubling) up to
+    ``cloud_ceiling``, logging a warning. Returns ``(items, cloud_used)``.
+    """
+    thresholds = _escalation_thresholds(cloud_max, cloud_ceiling) if escalate else [cloud_max]
+    for thr in thresholds:
+        items = search_items(
+            catalog_url,
+            SENTINEL2_L2A,
+            bbox,
+            datetime=datetime,
+            query={"eo:cloud_cover": {"lt": thr}},
+            opener=opener,
+        )
+        if items:
+            if thr > cloud_max:
+                logger.warning(
+                    "No Sentinel-2 scene under %.0f%% cloud for bbox %s; "
+                    "relaxed to <%.0f%% (%d scenes).",
+                    cloud_max, tuple(bbox), thr, len(items),
+                )
+            return items, thr
+    return [], thresholds[-1]
+
+
 def fetch_sentinel2_band(
     bbox: BBox,
     band: str,
     out_path: str,
     datetime: Optional[str] = None,
-    max_cloud: Optional[float] = None,
+    cloud_max: float = DEFAULT_MAX_CLOUD,
+    months: Optional[Sequence[int]] = None,
+    auto_season: bool = True,
+    escalate: bool = True,
     catalog_url: str = EARTH_SEARCH_V1,
     opener=None,
 ) -> str:
-    """Fetch one Sentinel-2 L2A band over ``bbox``, using the least-cloudy scene.
+    """Fetch one Sentinel-2 L2A band over ``bbox`` from a near-clear, dry-season scene.
 
-    Note: this is a first-pass single-scene fetch. Multi-scene cloud masking and
-    temporal compositing are implemented in P0d (issue planesight-bcn).
+    Selection prefers (in order): the dry-season months, then the lowest cloud
+    cover. The dry season is taken from ``months`` if given, else - when
+    ``auto_season`` is set - derived empirically from the AOI's own clear-scene
+    histogram (the months with the most near-clear scenes). Full multi-scene
+    cloud masking and temporal compositing remain P0d (issue planesight-bcn).
 
     Args:
         band: a key from ``sources.S2_BANDS`` (e.g. "red", "swir22", "scl").
-        datetime: optional RFC3339 interval to constrain the search window.
-        max_cloud: optional max scene cloud cover percent (query-extension).
+        datetime: optional RFC3339 interval; a multi-year window improves
+            dry-season detection.
+        cloud_max: maximum scene cloud cover percent (default 5%).
+        months: explicit preferred (dry-season) months, 1-12; overrides auto.
+        auto_season: when ``months`` is None, infer the dry season from the data.
+        escalate: relax the cloud cap for cloudy AOIs rather than returning none.
     """
-    query = {"eo:cloud_cover": {"lt": max_cloud}} if max_cloud is not None else None
-    items = search_items(
-        catalog_url, SENTINEL2_L2A, bbox, datetime=datetime, query=query, opener=opener
+    items, _ = search_clear_sentinel2(
+        bbox, cloud_max=cloud_max, datetime=datetime, escalate=escalate,
+        catalog_url=catalog_url, opener=opener,
     )
     if not items:
-        raise StacError(f"no Sentinel-2 L2A scenes found for bbox {tuple(bbox)}")
-    href = asset_href(least_cloudy(items), band)
+        raise StacError(
+            f"no Sentinel-2 L2A scene under {cloud_max}% cloud for bbox {tuple(bbox)}"
+        )
+    prefer = list(months) if months else (clearest_months(items) if auto_season else None)
+    scene = pick_scene(items, prefer_months=prefer)
+    logger.info(
+        "Sentinel-2 scene %s (cloud %.1f%%, month %d) selected for bbox %s",
+        scene.get("id"), scene.get("properties", {}).get("eo:cloud_cover", -1),
+        item_month(scene), tuple(bbox),
+    )
+    href = asset_href(scene, band)
     return fetch_clip([href], bbox, out_path, resampling="bilinear")

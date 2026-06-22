@@ -39,3 +39,12 @@ S2_BANDS = {
 
 #: STAC property carrying scene cloud cover (supports the query-extension filter).
 CLOUD_COVER_PROP = "eo:cloud_cover"
+
+#: Default maximum Sentinel-2 scene cloud cover (percent). We strongly prefer
+#: near-clear imagery; geology reads best with minimal cloud AND in the dry
+#: season (less vegetation/snow).
+DEFAULT_MAX_CLOUD = 5.0
+
+#: Upper bound when escalating the cloud threshold for cloudy AOIs that have no
+#: scene under DEFAULT_MAX_CLOUD in the requested window.
+CLOUD_CEILING = 20.0

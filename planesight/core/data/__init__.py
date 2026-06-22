@@ -12,8 +12,24 @@ top of this fetch layer.
 from __future__ import annotations
 
 from . import sources
-from .fetch import fetch_clip, fetch_dem, fetch_sentinel2_band, to_vsicurl
-from .stac import StacError, asset_href, least_cloudy, search_items
+from .fetch import (
+    fetch_clip,
+    fetch_dem,
+    fetch_sentinel2_band,
+    search_clear_sentinel2,
+    to_vsicurl,
+)
+from .stac import (
+    StacError,
+    asset_href,
+    clearest_months,
+    cloud_cover,
+    item_month,
+    least_cloudy,
+    monthly_cloud_stats,
+    pick_scene,
+    search_items,
+)
 
 __all__ = [
     "sources",
@@ -21,8 +37,14 @@ __all__ = [
     "search_items",
     "asset_href",
     "least_cloudy",
+    "cloud_cover",
+    "item_month",
+    "monthly_cloud_stats",
+    "clearest_months",
+    "pick_scene",
     "to_vsicurl",
     "fetch_clip",
     "fetch_dem",
     "fetch_sentinel2_band",
+    "search_clear_sentinel2",
 ]

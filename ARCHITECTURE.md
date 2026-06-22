@@ -361,10 +361,15 @@ result without configuring anything.
   custom projection** (transverse Mercator or Lambert centred on the AOI), or
   **tile** the AOI - never assume one fixed UTM zone. The metric-CRS requirement
   for plane fitting (Section 6) is satisfied by this per-AOI projection.
-- **Cloud cover & compositing (Q7).** A single Sentinel-2 L2A scene is often
-  cloudy. Auto-fetch needs **cloud masking (SCL/QA band) + temporal compositing
-  (e.g. seasonal median) + scene selection** - not a single-scene grab. This is
-  currently the dominant unsolved piece of the imagery front-end.
+- **Cloud cover & dry-season selection (Q7, D15).** Geology reads best with
+  minimal cloud AND in the dry season (less vegetation/snow). Scene selection now
+  (a) hard-filters to **<5% cloud by default** (configurable; escalates the cap
+  for persistently cloudy AOIs and logs it), and (b) prefers the locality's
+  **dry season, derived empirically** from the AOI's own clear-scene histogram -
+  the months with the most near-clear scenes - so no global climate model is
+  needed. Verified live: correctly recovers Oct-Dec for arid Pakistan and Nov for
+  monsoonal Nepal. **Still P0d:** multi-scene SCL/QA cloud *masking* + temporal
+  *compositing* (seasonal median) on top of this selection.
 - **Reproducibility.** STAC query results drift as catalogs update, so the same
   AOI can yield different answers over time. **Pin resolved scene IDs and
   acquisition dates into the output provenance** so results reproduce - essential
@@ -603,6 +608,9 @@ Confirmed decisions:
   behind a signing shim. (Confirmed - review)
 - **D14** - **Synthetic-DEM recovery** is a hard gate inside Phase 3, before
   field validation. (Confirmed - review)
+- **D15** - Sentinel-2 selection defaults to **<5% cloud** and prefers the
+  **empirically-detected dry season** (clearest-months histogram per AOI), not a
+  hardcoded climate model. (Confirmed - implemented & live-verified)
 
 Open questions:
 
@@ -617,8 +625,8 @@ Open questions:
   output: default mode and window size (6.5).
 - **Q6** - CRS policy: per-AOI custom TM/Lambert vs tiling; behaviour at zone
   boundaries and poles (7.3).
-- **Q7** - Cloud-compositing strategy and default temporal window for Sentinel-2
-  (7.3).
+- **Q7** - Cloud handling: scene selection (<5% + dry-season) is done (D15);
+  remaining is multi-scene SCL/QA masking + temporal compositing in P0d (7.3).
 - **Q8** - Re-detect vs preserve-edits project-state policy + state-schema
   versioning (Section 10).
 - **Q9** - DEM sampling method along traces (densify interval, bilinear vs
