@@ -8,9 +8,10 @@ on:
 
 jobs:
   test:
+    name: Pure core (lint + tests, no GDAL)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v5
         with:
@@ -24,5 +25,25 @@ jobs:
       - name: Lint (ruff)
         run: ruff check planesight tests scripts
 
-      - name: Test (pytest)
+      - name: Test (pytest; GDAL tests auto-skip)
         run: pytest
+
+  gdal-test:
+    name: GDAL integration (raster fetch/clip)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up GDAL via micromamba
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: gdal
+          create-args: >-
+            python=3.12
+            gdal>=3.8
+            numpy
+            pytest
+
+      - name: Test (GDAL-dependent)
+        shell: bash -el {0}
+        run: pytest tests/test_fetch_gdal.py -v

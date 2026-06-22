@@ -27,6 +27,23 @@ ruff check planesight tests scripts # lint
 python scripts/deploy_to_qgis.py    # symlink the plugin into local QGIS to test
 ```
 
+### Headless GDAL (optional, for the raster I/O tests)
+
+Most of the core is pure numpy/scipy and needs no GDAL. The thin raster-fetch
+edge (`planesight/core/data/fetch.py`) does, and its tests
+(`tests/test_fetch_gdal.py`) auto-skip when GDAL is absent. For a no-sudo
+headless GDAL that mirrors QGIS's bundled GDAL:
+
+```bash
+scripts/setup_dev_gdal.sh 'gdal=3.10'   # pin to match your QGIS (Help > About)
+MAMBA_ROOT_PREFIX=$HOME/micromamba PYTHONPATH=$PWD \
+  $HOME/bin/micromamba run -n gdal pytest   # runs the GDAL tests too
+```
+
+Dev philosophy: develop the analytical core headless (fast loop, full CI), and
+use QGIS for **integration checkpoints at phase boundaries** - not only at the
+end. Keep GDAL at the I/O edges; keep algorithms on numpy arrays.
+
 ## Conventions
 
 - `planesight/core/` must **never import QGIS** - keep it CI-testable.
