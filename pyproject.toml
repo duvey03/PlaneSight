@@ -1,0 +1,21 @@
+[project]
+name = "planesight"
+version = "0.0.1"
+description = "Derive geological strike and dip from global DEM and Sentinel-2 data, inside QGIS."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Michael Duvall", email = "duvall@ualberta.ca" }]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "B"]
+# Allow QGIS-mandated camelCase API method names (initGui, classFactory, ...).
+ignore = ["N802", "N803", "N806"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

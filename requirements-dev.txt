@@ -1,0 +1,7 @@
+# Dev/CI dependencies for the pure-Python core (planesight.core).
+# These mirror what QGIS bundles at runtime (numpy, scipy) plus test tooling.
+# The plugin itself ships NO third-party deps (decision D11).
+numpy
+scipy
+pytest
+ruff

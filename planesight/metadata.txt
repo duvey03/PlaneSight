@@ -1,0 +1,17 @@
+[general]
+name=PlaneSight
+qgisMinimumVersion=3.22
+description=Derive geological strike and dip from global DEM and Sentinel-2 data.
+about=PlaneSight aggregates free global DEM (Copernicus GLO-30) and Sentinel-2 data for any area of interest, automatically detects bedding/contact traces, and mass-computes strike and dip by plane-fitting each trace against topography. Pre-alpha and under active development.
+version=0.0.1
+author=Michael Duvall
+email=duvall@ualberta.ca
+tracker=https://github.com/duvey03/PlaneSight/issues
+repository=https://github.com/duvey03/PlaneSight
+homepage=https://github.com/duvey03/PlaneSight
+category=Plugins
+icon=resources/icon.svg
+experimental=True
+deprecated=False
+tags=geology,structural geology,strike,dip,dem,sentinel-2,remote sensing,raster,vector
+hasProcessingProvider=no
