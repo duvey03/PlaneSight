@@ -23,7 +23,7 @@ BBOX = [82.40, 27.70, 82.50, 27.80]    # <- small AOI (default: Nepal foothills)
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
 
-from planesight.core.data import fetch_dem, fetch_sentinel2_band
+from planesight.core.data import fetch_dem, fetch_sentinel2_band  # noqa: E402
 
 out = tempfile.mkdtemp()
 dem = os.path.join(out, "planesight_dem.tif")
