@@ -54,11 +54,21 @@ symbol.setDataDefinedProperty(
 )
 lyr.setRenderer(QgsSingleSymbolRenderer(QgsMarkerSymbol([halo, symbol])))
 
-# Label each point with its dip value.
+# Label each point with its dip value, offset 15 px in the dip direction.
 labels = QgsPalLayerSettings()
 labels.fieldName = "format_number(\"dip\", 0)"
 labels.isExpression = True
-labels.dist = 2
+labels.placement = QgsPalLayerSettings.OverPoint
+labels.offsetUnits = QgsUnitTypes.RenderPixels
+ddp = labels.dataDefinedProperties()
+ddp.setProperty(
+    QgsPalLayerSettings.OffsetXY,
+    # +x = east, -y = north (screen). Flip the -15 to +15 if labels land up-dip.
+    QgsProperty.fromExpression(
+        "array(15 * sin(radians(\"dip_dir\")), -15 * cos(radians(\"dip_dir\")))"
+    ),
+)
+labels.setDataDefinedProperties(ddp)
 lyr.setLabeling(QgsVectorLayerSimpleLabeling(labels))
 lyr.setLabelsEnabled(True)
 lyr.triggerRepaint()

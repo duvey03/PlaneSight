@@ -90,7 +90,20 @@
       <text-style isExpression="1" fieldName="format_number(&quot;dip&quot;, 0)" fontSize="8" fontSizeUnit="Point" textColor="50,50,50,255">
         <text-buffer bufferDraw="1" bufferSize="0.8" bufferSizeUnits="MM" bufferColor="255,255,255,255"/>
       </text-style>
-      <placement placement="1" dist="2.5" distUnits="MM"/>
+      <placement placement="1" offsetType="0" xOffset="0" yOffset="0" offsetUnits="Pixel"/>
+      <dd_properties>
+        <Option type="Map">
+          <Option name="name" type="QString" value=""/>
+          <Option name="properties" type="Map">
+            <Option name="OffsetXY" type="Map">
+              <Option name="active" type="bool" value="true"/>
+              <Option name="expression" type="QString" value="array(15 * sin(radians(&quot;dip_dir&quot;)), -15 * cos(radians(&quot;dip_dir&quot;)))"/>
+              <Option name="type" type="int" value="3"/>
+            </Option>
+          </Option>
+          <Option name="type" type="QString" value="collection"/>
+        </Option>
+      </dd_properties>
     </settings>
   </labeling>
 </qgis>
