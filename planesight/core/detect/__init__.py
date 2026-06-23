@@ -6,6 +6,8 @@ from .base import (
     get_detector,
     register_detector,
 )
+from .canny import canny, gaussian_gradient, hysteresis, non_max_suppression
+from .classical import ClassicalTraceDetector
 from .linearity import (
     linearity_at_budget,
     linearity_metrics,
@@ -49,5 +51,11 @@ __all__ = [
     "trace_skeleton",
     "simplify",
     "pixels_to_world",
+    "polylines_from_mask",
     "extract_polylines",
+    "gaussian_gradient",
+    "non_max_suppression",
+    "hysteresis",
+    "canny",
+    "ClassicalTraceDetector",
 ]

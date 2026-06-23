@@ -83,8 +83,8 @@ def test_extract_polylines_recovers_a_line():
     resp[15, :] = 1.0  # a strong horizontal ridge
     pls = extract_polylines(resp, budget=0.05, min_length=5)
     assert len(pls) >= 1
-    main = max(pls, key=len)
     # spans most of the width and lies on row 15 (-> y/pixel-row constant)
+    main = max(pls, key=lambda t: np.ptp(t[:, 0]))  # widest x-extent
     xs = main[:, 0]
     assert xs.max() - xs.min() > 25
 
@@ -96,5 +96,5 @@ def test_extract_polylines_world_coords_when_transform_given():
     pls = extract_polylines(resp, budget=0.1, min_length=5, transform=gt)
     assert len(pls) >= 1
     # row 10 -> world y = 8000 + (10.5)*(-30) = 7685
-    main = max(pls, key=len)
+    main = max(pls, key=lambda t: np.ptp(t[:, 0]))  # widest x-extent
     assert np.allclose(main[:, 1], 7685.0)

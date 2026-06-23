@@ -26,6 +26,7 @@ __all__ = [
     "trace_skeleton",
     "simplify",
     "pixels_to_world",
+    "polylines_from_mask",
     "extract_polylines",
 ]
 
@@ -96,11 +97,12 @@ def trace_skeleton(skel, min_length: int = 2):
     any with fewer than ``min_length`` vertices.
     """
     skel = np.asarray(skel, dtype=bool)
-    pts = {(int(r), int(c)) for r, c in zip(*np.nonzero(skel))}
-    if not pts:
+    ptset = {(int(r), int(c)) for r, c in zip(*np.nonzero(skel))}
+    if not ptset:
         return []
+    pts = sorted(ptset)  # deterministic iteration order (reproducible results)
     adj = {p: [(p[0] + dr, p[1] + dc) for dr, dc in _OFFSETS
-               if (p[0] + dr, p[1] + dc) in pts] for p in pts}
+               if (p[0] + dr, p[1] + dc) in ptset] for p in pts}
     deg = {p: len(adj[p]) for p in pts}
     used = set()
 
@@ -174,18 +176,16 @@ def pixels_to_world(rc_points, transform):
     return np.column_stack([x, y])
 
 
-def extract_polylines(response, budget: float = 0.05, valid_mask=None,
-                      min_length: int = 5, simplify_tol: float = 1.0,
-                      transform=None):
-    """Full back-end: response map -> simplified trace polylines.
+def polylines_from_mask(mask, min_length: int = 5, simplify_tol: float = 1.0,
+                        transform=None):
+    """Binary detection mask -> simplified trace polylines.
 
-    Thresholds at ``budget`` (top-k strong pixels), thins, traces, simplifies, and
-    drops polylines shorter than ``min_length`` vertices. Returns a list of
-    ``(n, 2)`` arrays: world ``(x, y)`` if ``transform`` is given, else pixel
-    ``(col, row)``.
+    Thins, traces, simplifies, and drops polylines shorter than ``min_length``
+    vertices. Takes an already-binarised mask (e.g. Canny edges), so it skips the
+    budget threshold. Returns a list of ``(n, 2)`` arrays: world ``(x, y)`` if
+    ``transform`` is given, else pixel ``(col, row)``.
     """
-    det = detect_at_budget(response, budget, valid_mask=valid_mask)
-    skel = thin(det)
+    skel = thin(mask)
     out = []
     for path in trace_skeleton(skel, min_length=2):
         if len(path) < min_length:
@@ -196,3 +196,14 @@ def extract_polylines(response, budget: float = 0.05, valid_mask=None,
         else:
             out.append(rc[:, ::-1])  # -> (col, row) = (x, y) in pixel space
     return out
+
+
+def extract_polylines(response, budget: float = 0.05, valid_mask=None,
+                      min_length: int = 5, simplify_tol: float = 1.0,
+                      transform=None):
+    """Full back-end for a continuous response: threshold at ``budget`` (top-k
+    strong pixels), then ``polylines_from_mask``. See that function for the rest.
+    """
+    det = detect_at_budget(response, budget, valid_mask=valid_mask)
+    return polylines_from_mask(det, min_length=min_length,
+                               simplify_tol=simplify_tol, transform=transform)
