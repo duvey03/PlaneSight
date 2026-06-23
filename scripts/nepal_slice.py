@@ -18,6 +18,7 @@ Run under the headless GDAL env:
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 
 import numpy as np
@@ -46,27 +47,44 @@ def wsl_to_win(path: str) -> str:
     return path
 
 
+def _persist(src: str, dst: str):
+    """Copy src -> dst, tolerating a locked dst (e.g. open in QGIS)."""
+    try:
+        shutil.copyfile(src, dst)
+    except OSError:
+        print(f"  WARNING: could not update {dst} (open in QGIS?); keeping existing.")
+
+
 def load_dem_utm():
-    """Fetch GLO-30 over the AOI, reproject to the metric target CRS, persist it."""
+    """Fetch GLO-30 over the AOI and reproject to the metric target CRS.
+
+    Reprojects to a temp file (always writable) and copies a persistent DEM into
+    OUT_DIR for the user; returns the temp path so downstream reads never hit a
+    locked output.
+    """
     os.makedirs(OUT_DIR, exist_ok=True)
-    dem4326 = os.path.join(tempfile.mkdtemp(), "dem4326.tif")
+    tmp = tempfile.mkdtemp()
+    dem4326 = os.path.join(tmp, "dem4326.tif")
     print(f"Fetching GLO-30 DEM over {AOI_WGS84} ...")
     fetch_dem(AOI_WGS84, dem4326)
-    dem_utm = os.path.join(OUT_DIR, "nepal_dem_utm.tif")
+    dem_utm = os.path.join(tmp, "dem_utm.tif")
     print(f"Reprojecting DEM to EPSG:{TARGET_EPSG} @ {SPACING} m ...")
     gdal.Warp(dem_utm, dem4326, dstSRS=f"EPSG:{TARGET_EPSG}",
               xRes=SPACING, yRes=SPACING, resampleAlg="bilinear")
+    _persist(dem_utm, os.path.join(OUT_DIR, "nepal_dem_utm.tif"))
     ds = gdal.Open(dem_utm)
     band = ds.GetRasterBand(1)
     return band.ReadAsArray().astype(float), ds.GetGeoTransform(), band.GetNoDataValue(), dem_utm
 
 
-def write_hillshade(dem_utm: str) -> str:
-    """Emit a hillshade of the reprojected DEM for visual QA."""
+def write_hillshade(dem_src: str) -> str:
+    """Emit a hillshade of the reprojected DEM for visual QA (tolerates a lock)."""
     out = os.path.join(OUT_DIR, "nepal_hillshade.tif")
-    gdal.DEMProcessing(out, dem_utm, "hillshade",
+    tmp = os.path.join(tempfile.mkdtemp(), "hillshade.tif")
+    gdal.DEMProcessing(tmp, dem_src, "hillshade",
                        options=gdal.DEMProcessingOptions(
                            azimuth=315, altitude=45, zFactor=1, computeEdges=True))
+    _persist(tmp, out)
     return out
 
 
@@ -92,9 +110,8 @@ def write_geopackage(records) -> str:
     """Write attitude points (at trace centroids) to a GeoPackage."""
     out = os.path.join(OUT_DIR, "nepal_attitudes.gpkg")
     drv = ogr.GetDriverByName("GPKG")
-    if os.path.exists(out):
-        drv.DeleteDataSource(out)
-    ds = drv.CreateDataSource(out)
+    tmp = os.path.join(tempfile.mkdtemp(), "attitudes.gpkg")
+    ds = drv.CreateDataSource(tmp)
     srs = osr.SpatialReference()
     srs.ImportFromEPSG(TARGET_EPSG)
     layer = ds.CreateLayer("attitudes", srs, ogr.wkbPoint)
@@ -116,6 +133,7 @@ def write_geopackage(records) -> str:
             feat.SetField(name, val)
         layer.CreateFeature(feat)
     ds = None
+    _persist(tmp, out)
     return out
 
 
