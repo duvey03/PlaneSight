@@ -12,6 +12,7 @@ top of this fetch layer.
 from __future__ import annotations
 
 from . import sources
+from .align import align_to_grid, read_grid
 from .fetch import (
     fetch_clip,
     fetch_dem,
@@ -47,4 +48,6 @@ __all__ = [
     "fetch_dem",
     "fetch_sentinel2_band",
     "search_clear_sentinel2",
+    "align_to_grid",
+    "read_grid",
 ]
