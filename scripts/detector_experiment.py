@@ -47,7 +47,7 @@ from planesight.core.data import (
 )
 from planesight.core.derivatives import build_spectral_stack, build_terrain_stack, normalize01
 from planesight.core.derivatives.terrain import gradients
-from planesight.core.detect import recall_curve
+from planesight.core.detect import linear_response, recall_curve
 
 gdal.UseExceptions()
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -76,6 +76,8 @@ RES = 30.0                   # analysis grid resolution (m) = GLO-30 native
 BUDGETS = (0.01, 0.02, 0.05, 0.10, 0.20)
 TOLERANCE_PX = 1             # ~1 pixel registration buffer for matching
 RANK_BUDGET = 0.05           # leaderboard is sorted by recall at this budget
+SIGMA_D = 1.0                # structure-tensor derivative scale (px)
+SIGMA_I = 4.0                # structure-tensor integration scale (px ~ 120 m)
 
 S2_NEEDED = ("blue", "red", "nir", "swir16", "swir22")
 TERRAIN = ("elevation", "slope", "multi_hillshade", "tpi",
@@ -232,7 +234,52 @@ def run_region(key):
         for name, curve in rows:
             wr.writerow([name] + [f"{curve[b]:.4f}" for b in BUDGETS])
     print(f"\nWrote {csv_path}")
+
+    score_linear_response(key, layers, truth, valid, dem_path, rows)
     return rows
+
+
+def score_linear_response(key, layers, truth, valid, dem_path, band_rows):
+    """Compare the multi-channel structure-tensor linear response (DEM-only,
+    S2-only, fused) against the best single-band gradient baseline.
+
+    Tests the contact-vs-mound hypothesis: a linearity-aware, cross-modal operator
+    should match/beat per-band gradient magnitude, and fusing DEM + S2 should beat
+    either alone (Sentinel supporting the DEM edge).
+    """
+    dem_ch = [normalize01(layers[n]) for n in TERRAIN if n in layers]
+    s2_ch = [normalize01(layers[n]) for n in SPECTRAL if n in layers]
+    variants = [("st_dem", "DEM-only (struct)", dem_ch)]
+    if s2_ch:
+        variants.append(("st_s2", "S2-only (struct)", s2_ch))
+        variants.append(("st_demS2", "DEM+S2 (struct)", dem_ch + s2_ch))
+
+    results = []
+    # reference: the best single band under the plain gradient-magnitude baseline
+    best_band, best_curve = band_rows[0]
+    results.append((f"gradient baseline ({best_band})", best_curve))
+    for tag, label, channels in variants:
+        resp = linear_response(channels, sigma_d=SIGMA_D, sigma_i=SIGMA_I,
+                               kind="anisotropy")
+        curve = dict(recall_curve(resp, truth, budgets=BUDGETS,
+                                  tolerance_px=TOLERANCE_PX, valid_mask=valid))
+        results.append((label, curve))
+        save_raster(resp, dem_path, f"{key}_{tag}.tif")
+        if tag == "st_demS2":  # coherence raster for the visual mound-suppression QA
+            coh = linear_response(channels, sigma_d=SIGMA_D, sigma_i=SIGMA_I,
+                                  kind="coherence")
+            save_raster(coh, dem_path, f"{key}_st_demS2_coherence.tif")
+
+    hdr = "method".ljust(28) + "".join(f"r@{int(b*100)}%".rjust(9) for b in BUDGETS)
+    print(f"\n=== {key}: structure-tensor linear response vs gradient baseline ===")
+    print(f"(recall@equal budget, tolerance {TOLERANCE_PX}px; "
+          f"sigma_d={SIGMA_D}, sigma_i={SIGMA_I})\n")
+    print(hdr)
+    print("-" * len(hdr))
+    for label, curve in results:
+        print(label.ljust(28) + "".join(
+            (f"{curve[b]:.3f}" if np.isfinite(curve[b]) else "  nan").rjust(9)
+            for b in BUDGETS))
 
 
 def main():
