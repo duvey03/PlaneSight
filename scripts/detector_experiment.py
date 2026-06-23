@@ -70,6 +70,12 @@ REGIONS = {
         "epsg": 32641,  # UTM 41N
         "provenance": "satellite-imagery-digitized (fair S2 test)",
     },
+    "canada": {
+        "aoi": [-117.0, 52.0, -116.0, 53.0],
+        "traces": os.path.join(REPO, "data", "raw", "canada", "canada_traces.shp"),
+        "epsg": 32611,  # UTM 11N (Alberta/BC Cordillera - high relief, NOT the Shield)
+        "provenance": "Cordilleran mountains, EPSG:4326 traces",
+    },
 }
 
 RES = 30.0                   # analysis grid resolution (m) = GLO-30 native
