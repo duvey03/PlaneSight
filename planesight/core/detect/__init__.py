@@ -6,6 +6,10 @@ from .base import (
     get_detector,
     register_detector,
 )
+from .linearity import (
+    linearity_at_budget,
+    linearity_metrics,
+)
 from .score import (
     detect_at_budget,
     disk,
@@ -28,6 +32,8 @@ __all__ = [
     "detect_at_budget",
     "recall_at_budget",
     "recall_curve",
+    "linearity_metrics",
+    "linearity_at_budget",
     "structure_tensor",
     "tensor_eigenvalues",
     "tensor_response",

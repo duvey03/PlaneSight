@@ -47,7 +47,7 @@ from planesight.core.data import (
 )
 from planesight.core.derivatives import build_spectral_stack, build_terrain_stack, normalize01
 from planesight.core.derivatives.terrain import gradients
-from planesight.core.detect import linear_response, recall_curve
+from planesight.core.detect import linear_response, linearity_at_budget, recall_curve
 
 gdal.UseExceptions()
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -115,14 +115,16 @@ def _aoi_coverage(items, aoi, n=120):
     return float(covered.mean())
 
 
-def fetch_s2_bands(aoi, dem_path, tmp):
+def fetch_s2_bands(aoi, dem_path, tmp, force_months=None):
     """Fetch a clear dry-season S2 mosaic and warp each band onto the DEM grid.
 
     A single S2 scene often covers only part of an AOI (the tile grid is fixed), so
     we pick the acquisition DATE whose tiles best cover the AOI and mosaic them
     (same date -> no temporal seam). This is the experiment-grade stand-in for the
-    deferred multi-scene compositing (planesight-bcn). Returns {band_key: array} or
-    {} if no usable coverage / network failure (then terrain-only).
+    deferred multi-scene compositing (planesight-bcn). ``force_months`` (e.g. [11])
+    overrides the empirical dry-season pick, for seasonal-sensitivity tests.
+    Returns {band_key: array} or {} if no usable coverage / network failure (then
+    terrain-only).
     """
     gdal.SetConfigOption("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
     try:
@@ -130,7 +132,9 @@ def fetch_s2_bands(aoi, dem_path, tmp):
         if not items:
             log.warning("No clear Sentinel-2 scene; running terrain-only.")
             return {}
-        months = set(clearest_months(items))
+        months = set(force_months) if force_months else set(clearest_months(items))
+        if force_months:
+            log.info("Forcing S2 months %s (seasonal test)", sorted(months))
         candidates = [it for it in items if item_month(it) in months] or items
         by_date = {}
         for it in candidates:
@@ -235,7 +239,9 @@ def run_region(key):
 
     _, terr = build_terrain_stack(dem, RES, names=TERRAIN)
     layers = dict(terr)
-    s2 = fetch_s2_bands(cfg["aoi"], dem_path, tmp)
+    fm = os.environ.get("PS_FORCE_MONTHS")
+    force_months = [int(m) for m in fm.split(",")] if fm else None
+    s2 = fetch_s2_bands(cfg["aoi"], dem_path, tmp, force_months=force_months)
     if s2:
         _, spec = build_spectral_stack(s2, names=SPECTRAL)
         layers.update(spec)
@@ -274,46 +280,53 @@ def run_region(key):
 
 
 def score_linear_response(key, layers, truth, valid, dem_path, band_rows):
-    """Compare the multi-channel structure-tensor linear response (DEM-only,
-    S2-only, fused) against the best single-band gradient baseline.
+    """Compare the structure-tensor linear response against the gradient baseline,
+    on BOTH recall (vs incomplete labels) and label-free LINEARITY.
 
-    Tests the contact-vs-mound hypothesis: a linearity-aware, cross-modal operator
-    should match/beat per-band gradient magnitude, and fusing DEM + S2 should beat
-    either alone (Sentinel supporting the DEM edge).
+    Two clean comparisons: (a) same-band - gradient vs structure tensor on the
+    single best band, isolating the operator from the band set; (b) fusion -
+    structure tensor on the DEM stack, S2 stack, and both. The linearity column
+    measures what recall cannot: whether detections form long clean lines (the
+    contact-vs-mound goal) rather than scattered blobs.
     """
     dem_ch = [normalize01(layers[n]) for n in TERRAIN if n in layers]
     s2_ch = [normalize01(layers[n]) for n in SPECTRAL if n in layers]
-    variants = [("st_dem", "DEM-only (struct)", dem_ch)]
-    if s2_ch:
-        variants.append(("st_s2", "S2-only (struct)", s2_ch))
-        variants.append(("st_demS2", "DEM+S2 (struct)", dem_ch + s2_ch))
+    best_band, _ = band_rows[0]
+    best_norm = normalize01(layers[best_band])
 
-    results = []
-    # reference: the best single band under the plain gradient-magnitude baseline
-    best_band, best_curve = band_rows[0]
-    results.append((f"gradient baseline ({best_band})", best_curve))
-    for tag, label, channels in variants:
-        resp = linear_response(channels, sigma_d=SIGMA_D, sigma_i=SIGMA_I,
+    def st(channels):
+        return linear_response(channels, sigma_d=SIGMA_D, sigma_i=SIGMA_I,
                                kind="anisotropy")
+
+    methods = [
+        (f"gradient [{best_band}]", "grad_best", edge_response(layers[best_band])),
+        (f"struct-tensor [{best_band}]", "st_best", st(best_norm)),
+        ("struct DEM-stack", "st_dem", st(dem_ch)),
+    ]
+    if s2_ch:
+        methods.append(("struct S2-stack", "st_s2", st(s2_ch)))
+        methods.append(("struct DEM+S2", "st_demS2", st(dem_ch + s2_ch)))
+
+    rows = []
+    for label, tag, resp in methods:
         curve = dict(recall_curve(resp, truth, budgets=BUDGETS,
                                   tolerance_px=TOLERANCE_PX, valid_mask=valid))
-        results.append((label, curve))
+        lin = linearity_at_budget(resp, budget=RANK_BUDGET, valid_mask=valid)
+        rows.append((label, curve, lin))
         save_raster(resp, dem_path, f"{key}_{tag}.tif")
-        if tag == "st_demS2":  # coherence raster for the visual mound-suppression QA
-            coh = linear_response(channels, sigma_d=SIGMA_D, sigma_i=SIGMA_I,
-                                  kind="coherence")
-            save_raster(coh, dem_path, f"{key}_st_demS2_coherence.tif")
 
-    hdr = "method".ljust(28) + "".join(f"r@{int(b*100)}%".rjust(9) for b in BUDGETS)
-    print(f"\n=== {key}: structure-tensor linear response vs gradient baseline ===")
-    print(f"(recall@equal budget, tolerance {TOLERANCE_PX}px; "
-          f"sigma_d={SIGMA_D}, sigma_i={SIGMA_I})\n")
+    hdr = ("method".ljust(26) + "".join(f"r@{int(b*100)}%".rjust(8) for b in BUDGETS)
+           + f"  lin@{int(RANK_BUDGET*100)}%".rjust(9))
+    print(f"\n=== {key}: structure tensor vs gradient (recall AND linearity) ===")
+    print(f"(tolerance {TOLERANCE_PX}px; sigma_d={SIGMA_D}, sigma_i={SIGMA_I}; "
+          f"linearity is label-free: 1=clean lines, 0=blobs/speckle)\n")
     print(hdr)
     print("-" * len(hdr))
-    for label, curve in results:
-        print(label.ljust(28) + "".join(
-            (f"{curve[b]:.3f}" if np.isfinite(curve[b]) else "  nan").rjust(9)
-            for b in BUDGETS))
+    for label, curve, lin in rows:
+        print(label.ljust(26)
+              + "".join((f"{curve[b]:.3f}" if np.isfinite(curve[b]) else "nan").rjust(8)
+                        for b in BUDGETS)
+              + f"{lin:.3f}".rjust(9))
 
 
 def main():
