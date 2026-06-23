@@ -54,15 +54,16 @@ SPECTRAL_BANDS = {
 }
 
 #: Curated defaults so a first-time user gets a result with no configuration.
-#: Chosen from the Phase 1 cross-region experiment (scripts/detector_experiment.py,
-#: Nepal + Pakistan): the bands that most reliably expose mapped contacts across
-#: both topography-digitized and imagery-digitized ground truth. SWIR stretch and
-#: iron-oxide are strong on imagery-mapped contacts (arid terrain); curvature and
-#: slope are strong on topography-mapped contacts - so the default stack carries
-#: both families. (clay/ndvi were weak contact exposers in both; ndvi remains
-#: available as a vegetation mask.)
+#: From the Phase 1 cross-region experiment (scripts/detector_experiment.py) run on
+#: Nepal + Pakistan + Canada with COVERAGE-CORRECTED Sentinel-2 mosaics. Across all
+#: three regions, curvature and slope are the robust, dominant contact exposers
+#: (the best band in every region is a DEM derivative). Sentinel-2 is a secondary
+#: contributor: iron_oxide is the most consistent spectral band (~0.16-0.30 recall
+#: everywhere); SWIR/clay/ndvi are weak or region/season-sensitive. The default
+#: still carries both families, but spectral is provisional - an earlier "SWIR
+#: dominates in arid Pakistan" result turned out to be a scene-coverage artifact.
 DEFAULT_TERRAIN = ("profile_curvature", "curvature", "slope", "multi_hillshade")
-DEFAULT_SPECTRAL = ("swir16_s", "iron_oxide", "swir22_s")
+DEFAULT_SPECTRAL = ("iron_oxide", "ferrous", "swir16_s")
 
 
 def build_terrain_stack(dem, px: float, names=DEFAULT_TERRAIN):
