@@ -31,4 +31,7 @@ Thumbs.db
 .vscode/
 *.swp
 
+# Generated analysis outputs / scratch
+debug/
+
 # Beads: the runtime DB is ignored via .beads/.gitignore; the JSONL is tracked

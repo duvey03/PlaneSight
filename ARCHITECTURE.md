@@ -303,9 +303,16 @@ parallel field-benchmark workstream.
 range of attitudes, the downslope sign, and the two metrics behaving -
 conditioning flags a straight down-dip trace with 866 m of relief as
 unconstrained (conditioning ~1e-32), and planarity flags folded traces. Pulled
-forward as an early spike (it does not depend on the detector). Still to do:
-propagate the DEM-vertical-error budget into reported uncertainty (S6.4), run on
-a sampled real-DEM trace, and add windowed fits (S6.5).
+forward as an early spike (it does not depend on the detector).
+
+**First real-data slice (Nepal, June 2026):** `scripts/nepal_slice.py` fetched the
+GLO-30 DEM, reprojected to UTM 44N, sampled all 408 hand-drawn Nepal traces
+(`planesight/core/attitude/sample.py`), and fit each. Result: median dip 28 deg
+(IQR 18-45), mean strike ~288 deg dipping NNE - **consistent with the Himalayan
+structural grain (WNW-ESE strike, north-dipping)** - with 96% passing the
+conditioning guard. The premise holds on real, messy traces. Still to do:
+propagate the DEM-vertical-error budget into reported uncertainty (S6.4), add
+windowed fits (S6.5), and wire to detected (not hand-drawn) traces.
 
 ### 6.7 Known limitations
 
