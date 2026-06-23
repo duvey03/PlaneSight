@@ -276,6 +276,19 @@ Behaviour (per user direction): attempt a fit even in marginal geometry, but
 to filtering fits below the computed threshold. We never present a geometrically
 unconstrained number as authoritative.
 
+**Status: implemented (first pass).** `fit_plane(points, sigma_z=...)` estimates
+1-sigma dip and dip-direction uncertainty by **Monte-Carlo perturbation** of the
+sampled elevations (`planesight/core/attitude/plane_fit.py`), reported as
+`dip_uncertainty` / `dip_direction_uncertainty`. It correctly blows up for
+low-relief / poorly-conditioned traces. On the Nepal slice (GLO-30, sigma_z =
+2 m) the reliable traces give a median dip uncertainty of only ~0.3 deg - which
+is the **optimistic lower bound**, because the model assumes *independent*
+per-point noise whereas real DEM error is spatially **correlated** (it does not
+average down by sqrt(N)). Planned refinement: add a correlated-error (random
+planar tilt) term so the budget reflects real GLO-30 behaviour; the dominant
+real-world uncertainties (the planar assumption, horizontal misregistration) are
+partly captured by planarity/residual today.
+
 ### 6.5 Along-trace variation (single point vs windowed fits)
 
 A single planar fit to a long, sinuous trace **averages away real along-strike

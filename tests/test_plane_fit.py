@@ -150,3 +150,35 @@ def test_attitude_is_frozen_dataclass():
     att = fit_plane(sinuous_trace(30.0, 90.0))
     with pytest.raises(dataclasses.FrozenInstanceError):
         att.dip = 10.0  # frozen
+
+
+# --- uncertainty budget (S6.4) ----------------------------------------------
+
+def test_uncertainty_is_nan_without_sigma():
+    att = fit_plane(sinuous_trace(30.0, 90.0))
+    assert math.isnan(att.dip_uncertainty)
+    assert math.isnan(att.dip_direction_uncertainty)
+
+
+def test_uncertainty_finite_and_grows_with_dem_noise():
+    pts = sinuous_trace(35.0, 120.0, n=60)
+    lo = fit_plane(pts, sigma_z=0.5)
+    hi = fit_plane(pts, sigma_z=4.0)
+    assert math.isfinite(lo.dip_uncertainty) and lo.dip_uncertainty > 0
+    assert hi.dip_uncertainty > lo.dip_uncertainty
+    assert hi.dip_direction_uncertainty > lo.dip_direction_uncertainty
+
+
+def test_uncertainty_large_for_degenerate_trace():
+    good = fit_plane(sinuous_trace(40.0, 100.0, n=60), sigma_z=2.0)
+    straight = fit_plane(straight_trace(40.0, 100.0, axis="dip"), sigma_z=2.0)
+    assert straight.dip_direction_uncertainty > good.dip_direction_uncertainty
+    assert straight.dip_direction_uncertainty > 20.0
+
+
+def test_uncertainty_is_reproducible_with_seed():
+    pts = sinuous_trace(30.0, 90.0, n=50)
+    a = fit_plane(pts, sigma_z=2.0, seed=7)
+    b = fit_plane(pts, sigma_z=2.0, seed=7)
+    assert a.dip_uncertainty == b.dip_uncertainty
+    assert a.dip_direction_uncertainty == b.dip_direction_uncertainty

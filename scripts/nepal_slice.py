@@ -37,6 +37,7 @@ TARGET_EPSG = 32644                     # UTM 44N (the traces' CRS)
 SPACING = 30.0                          # DEM-resolution sampling along traces
 MIN_SAMPLES = 5                         # need a few points for a meaningful fit
 COND_RELIABLE = 1e-3                    # conditioning above this = usable fit
+DEM_SIGMA_Z = 2.0                       # Copernicus GLO-30 ~1-sigma vertical error (m)
 OUT_DIR = os.path.join(REPO, "debug")
 
 
@@ -116,6 +117,7 @@ def write_geopackage(records) -> str:
     srs.ImportFromEPSG(TARGET_EPSG)
     layer = ds.CreateLayer("attitudes", srs, ogr.wkbPoint)
     fields = [("strike", ogr.OFTReal), ("dip", ogr.OFTReal), ("dip_dir", ogr.OFTReal),
+              ("dip_unc", ogr.OFTReal), ("dd_unc", ogr.OFTReal),
               ("cond", ogr.OFTReal), ("planarity", ogr.OFTReal), ("relief", ogr.OFTReal),
               ("n_samp", ogr.OFTInteger), ("reliable", ogr.OFTInteger)]
     for name, ftype in fields:
@@ -126,7 +128,10 @@ def write_geopackage(records) -> str:
         pt.AddPoint_2D(float(cx), float(cy))
         feat.SetGeometry(pt)
         for name, val in [("strike", att.strike), ("dip", att.dip),
-                          ("dip_dir", att.dip_direction), ("cond", att.conditioning),
+                          ("dip_dir", att.dip_direction),
+                          ("dip_unc", att.dip_uncertainty),
+                          ("dd_unc", att.dip_direction_uncertainty),
+                          ("cond", att.conditioning),
                           ("planarity", att.planarity), ("relief", att.relief),
                           ("n_samp", att.n_samples),
                           ("reliable", int(att.conditioning >= COND_RELIABLE))]:
@@ -164,7 +169,7 @@ def main():
         if len(pts3d) < MIN_SAMPLES:
             skipped += 1
             continue
-        att = fit_plane(pts3d)
+        att = fit_plane(pts3d, sigma_z=DEM_SIGMA_Z)
         records.append((pts3d[:, 0].mean(), pts3d[:, 1].mean(), att))
 
     fitted = [r[2] for r in records]
@@ -178,9 +183,12 @@ def main():
         reliefs = np.array([a.relief for a in reliable])
         dd = np.radians([a.dip_direction for a in reliable])
         mean_dd = np.degrees(np.arctan2(np.sin(dd).mean(), np.cos(dd).mean())) % 360
+        dip_unc = np.array([a.dip_uncertainty for a in reliable])
         print("Reliable-trace attitudes:")
         print(f"  dip   : median {np.median(dips):.0f} deg, "
               f"IQR {np.percentile(dips,25):.0f}-{np.percentile(dips,75):.0f}")
+        print(f"  dip uncertainty (1-sigma, GLO-30 {DEM_SIGMA_Z:.0f} m): "
+              f"median +/-{np.median(dip_unc):.1f} deg")
         print(f"  relief: median {np.median(reliefs):.0f} m, max {reliefs.max():.0f} m")
         print(f"  mean dip-direction {mean_dd:.0f} deg "
               f"(=> mean strike ~{(mean_dd-90)%360:.0f} deg)")
