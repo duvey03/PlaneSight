@@ -2,9 +2,12 @@
 <!-- Strike-and-dip of bedding (inclined). Authored pointing UP at rotation 0:
      the long bar = strike (E-W), the short tick = dip direction (North).
      In QGIS, set marker Rotation (data-defined) = the "dip_dir" field, so the
-     tick points downdip and the bar aligns with strike. -->
+     tick points downdip and the bar aligns with strike. The stroke is a QGIS
+     parametric param(outline), so the marker's stroke colour can be data-driven
+     (e.g. by reliability). -->
 <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
-  <g stroke="#1a1a1a" stroke-width="2.4" stroke-linecap="round" fill="none">
+  <g stroke="param(outline) #1a1a1a" stroke-width="param(outline-width) 2.4"
+     stroke-linecap="round" fill="none">
     <!-- strike bar (long line) -->
     <line x1="7" y1="24" x2="41" y2="24"/>
     <!-- dip tick (points up at 0 rotation) -->

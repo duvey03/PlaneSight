@@ -3,7 +3,12 @@
 Fetches the Copernicus GLO-30 DEM over the Nepal seed AOI, reprojects it to the
 traces' metric CRS (UTM 44N / EPSG:32644), samples the DEM along each hand-drawn
 trace, fits a plane (PCA), and reports the resulting attitudes + quality metrics.
-Writes the measurements to a GeoPackage.
+
+Outputs (in debug/, gitignored):
+  nepal_dem_utm.tif       reprojected DEM
+  nepal_hillshade.tif     hillshade for visual QA
+  nepal_attitudes.gpkg    attitude points (strike/dip/metrics)
+  nepal_attitudes.qml     ready-to-load QGIS style (strike/dip symbols + labels)
 
 Run under the headless GDAL env:
   MAMBA_ROOT_PREFIX=$HOME/micromamba PYTHONPATH=$PWD \
@@ -25,6 +30,7 @@ gdal.UseExceptions()
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TRACES = os.path.join(REPO, "data", "raw", "nepal", "nepal_traces.shp")
+SVG = os.path.join(REPO, "planesight", "resources", "symbols", "strike_dip_bedding.svg")
 AOI_WGS84 = [82.0, 27.6, 83.0, 28.0]   # covers the Nepal traces
 TARGET_EPSG = 32644                     # UTM 44N (the traces' CRS)
 SPACING = 30.0                          # DEM-resolution sampling along traces
@@ -33,22 +39,35 @@ COND_RELIABLE = 1e-3                    # conditioning above this = usable fit
 OUT_DIR = os.path.join(REPO, "debug")
 
 
+def wsl_to_win(path: str) -> str:
+    """Map a /mnt/<drive>/... WSL path to a <DRIVE>:/... path for Windows QGIS."""
+    if path.startswith("/mnt/") and len(path) > 6 and path[6] == "/":
+        return path[5].upper() + ":" + path[6:]
+    return path
+
+
 def load_dem_utm():
-    """Fetch GLO-30 over the AOI and reproject to the metric target CRS."""
-    tmp = tempfile.mkdtemp()
-    dem4326 = os.path.join(tmp, "dem4326.tif")
+    """Fetch GLO-30 over the AOI, reproject to the metric target CRS, persist it."""
+    os.makedirs(OUT_DIR, exist_ok=True)
+    dem4326 = os.path.join(tempfile.mkdtemp(), "dem4326.tif")
     print(f"Fetching GLO-30 DEM over {AOI_WGS84} ...")
     fetch_dem(AOI_WGS84, dem4326)
-    dem_utm = os.path.join(tmp, "dem_utm.tif")
+    dem_utm = os.path.join(OUT_DIR, "nepal_dem_utm.tif")
     print(f"Reprojecting DEM to EPSG:{TARGET_EPSG} @ {SPACING} m ...")
-    gdal.Warp(
-        dem_utm, dem4326, dstSRS=f"EPSG:{TARGET_EPSG}",
-        xRes=SPACING, yRes=SPACING, resampleAlg="bilinear",
-    )
+    gdal.Warp(dem_utm, dem4326, dstSRS=f"EPSG:{TARGET_EPSG}",
+              xRes=SPACING, yRes=SPACING, resampleAlg="bilinear")
     ds = gdal.Open(dem_utm)
     band = ds.GetRasterBand(1)
-    arr = band.ReadAsArray().astype(float)
-    return arr, ds.GetGeoTransform(), band.GetNoDataValue()
+    return band.ReadAsArray().astype(float), ds.GetGeoTransform(), band.GetNoDataValue(), dem_utm
+
+
+def write_hillshade(dem_utm: str) -> str:
+    """Emit a hillshade of the reprojected DEM for visual QA."""
+    out = os.path.join(OUT_DIR, "nepal_hillshade.tif")
+    gdal.DEMProcessing(out, dem_utm, "hillshade",
+                       options=gdal.DEMProcessingOptions(
+                           azimuth=315, altitude=45, zFactor=1, computeEdges=True))
+    return out
 
 
 def load_traces():
@@ -69,9 +88,8 @@ def load_traces():
     return traces
 
 
-def write_geopackage(records):
+def write_geopackage(records) -> str:
     """Write attitude points (at trace centroids) to a GeoPackage."""
-    os.makedirs(OUT_DIR, exist_ok=True)
     out = os.path.join(OUT_DIR, "nepal_attitudes.gpkg")
     drv = ogr.GetDriverByName("GPKG")
     if os.path.exists(out):
@@ -101,10 +119,24 @@ def write_geopackage(records):
     return out
 
 
+def write_qml() -> str:
+    """Emit a QGIS style: SVG strike/dip marker rotated by dip_dir, dip labels,
+    coloured by reliability. Load via layer Properties > Style > Load Style."""
+    template = os.path.join(REPO, "planesight", "resources", "symbols",
+                            "attitudes_strike_dip.qml")
+    out = os.path.join(OUT_DIR, "nepal_attitudes.qml")
+    with open(template) as fh:
+        tpl = fh.read()
+    with open(out, "w") as fh:
+        fh.write(tpl.replace("__SVG__", wsl_to_win(SVG)))
+    return out
+
+
 def main():
-    arr, gt, nodata = load_dem_utm()
+    arr, gt, nodata, dem_utm = load_dem_utm()
     print(f"DEM: {arr.shape[1]}x{arr.shape[0]} px, elevation "
           f"{np.nanmin(arr):.0f}-{np.nanmax(arr):.0f} m")
+    hs = write_hillshade(dem_utm)
     traces = load_traces()
     print(f"Traces: {len(traces)} line parts loaded\n")
 
@@ -115,8 +147,7 @@ def main():
             skipped += 1
             continue
         att = fit_plane(pts3d)
-        cx, cy = pts3d[:, 0].mean(), pts3d[:, 1].mean()
-        records.append((cx, cy, att))
+        records.append((pts3d[:, 0].mean(), pts3d[:, 1].mean(), att))
 
     fitted = [r[2] for r in records]
     reliable = [a for a in fitted if a.conditioning >= COND_RELIABLE]
@@ -127,18 +158,23 @@ def main():
     if reliable:
         dips = np.array([a.dip for a in reliable])
         reliefs = np.array([a.relief for a in reliable])
-        print("Reliable-trace attitudes:")
-        print(f"  dip      : median {np.median(dips):.0f} deg, "
-              f"IQR {np.percentile(dips,25):.0f}-{np.percentile(dips,75):.0f}")
-        print(f"  relief   : median {np.median(reliefs):.0f} m, max {reliefs.max():.0f} m")
-        # circular mean of dip-direction
         dd = np.radians([a.dip_direction for a in reliable])
         mean_dd = np.degrees(np.arctan2(np.sin(dd).mean(), np.cos(dd).mean())) % 360
-        print(f"  mean dip-direction: {mean_dd:.0f} deg "
+        print("Reliable-trace attitudes:")
+        print(f"  dip   : median {np.median(dips):.0f} deg, "
+              f"IQR {np.percentile(dips,25):.0f}-{np.percentile(dips,75):.0f}")
+        print(f"  relief: median {np.median(reliefs):.0f} m, max {reliefs.max():.0f} m")
+        print(f"  mean dip-direction {mean_dd:.0f} deg "
               f"(=> mean strike ~{(mean_dd-90)%360:.0f} deg)")
 
-    out = write_geopackage(records)
-    print(f"\nWrote {len(records)} measurements -> {out}")
+    gpkg = write_geopackage(records)
+    qml = write_qml()
+    print(f"\nWrote {len(records)} measurements.")
+    print("Outputs (load these in QGIS):")
+    for p in (hs, gpkg, qml):
+        print(f"  {wsl_to_win(p)}")
+    print("\nIn QGIS: add the hillshade, then the gpkg 'attitudes' layer, then")
+    print("right-click it > Properties > Style > Load Style > nepal_attitudes.qml")
 
 
 if __name__ == "__main__":
