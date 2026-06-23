@@ -22,6 +22,13 @@ from .structure import (
     tensor_eigenvalues,
     tensor_response,
 )
+from .vectorize import (
+    extract_polylines,
+    pixels_to_world,
+    simplify,
+    thin,
+    trace_skeleton,
+)
 
 __all__ = [
     "TraceDetector",
@@ -38,4 +45,9 @@ __all__ = [
     "tensor_eigenvalues",
     "tensor_response",
     "linear_response",
+    "thin",
+    "trace_skeleton",
+    "simplify",
+    "pixels_to_world",
+    "extract_polylines",
 ]
