@@ -46,7 +46,7 @@ def read_grid(ref_path: str) -> dict:
 
 
 def align_to_grid(
-    src_path: str,
+    src_path,
     out_path: str,
     ref_path: str,
     resampling: str = "bilinear",
@@ -57,6 +57,9 @@ def align_to_grid(
     The output matches the reference CRS, extent, pixel size, and dimensions
     pixel-for-pixel, so it can be stacked with the reference and other aligned
     bands. Use ``resampling="near"`` for categorical inputs (e.g. SCL).
+
+    ``src_path`` may be a single path or a list of paths; a list is mosaicked
+    onto the grid (e.g. several same-date Sentinel-2 tiles covering one AOI).
 
     Returns ``out_path``.
     """

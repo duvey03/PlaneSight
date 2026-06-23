@@ -42,7 +42,7 @@ from planesight.core.data import (
     asset_href,
     clearest_months,
     fetch_dem,
-    pick_scene,
+    item_month,
     search_clear_sentinel2,
 )
 from planesight.core.derivatives import build_spectral_stack, build_terrain_stack, normalize01
@@ -102,11 +102,27 @@ def dem_on_grid(aoi, epsg, tmp):
     return dem_utm
 
 
-def fetch_s2_bands(aoi, dem_path, tmp):
-    """Fetch a clear dry-season S2 scene and warp each needed band onto the DEM grid.
+def _aoi_coverage(items, aoi, n=120):
+    """Fraction of the AOI covered by the union of the items' footprints (bbox)."""
+    minx, miny, maxx, maxy = aoi
+    xs = np.linspace(minx, maxx, n)
+    ys = np.linspace(miny, maxy, n)
+    gx, gy = np.meshgrid(xs, ys)
+    covered = np.zeros((n, n), dtype=bool)
+    for it in items:
+        bx0, by0, bx1, by1 = it["bbox"][:4]
+        covered |= (gx >= bx0) & (gx <= bx1) & (gy >= by0) & (gy <= by1)
+    return float(covered.mean())
 
-    Returns {band_key: array}, or {} if no clear scene / network failure - the
-    experiment then runs terrain-only.
+
+def fetch_s2_bands(aoi, dem_path, tmp):
+    """Fetch a clear dry-season S2 mosaic and warp each band onto the DEM grid.
+
+    A single S2 scene often covers only part of an AOI (the tile grid is fixed), so
+    we pick the acquisition DATE whose tiles best cover the AOI and mosaic them
+    (same date -> no temporal seam). This is the experiment-grade stand-in for the
+    deferred multi-scene compositing (planesight-bcn). Returns {band_key: array} or
+    {} if no usable coverage / network failure (then terrain-only).
     """
     gdal.SetConfigOption("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
     try:
@@ -114,17 +130,29 @@ def fetch_s2_bands(aoi, dem_path, tmp):
         if not items:
             log.warning("No clear Sentinel-2 scene; running terrain-only.")
             return {}
-        scene = pick_scene(items, prefer_months=clearest_months(items))
-        log.info("S2 scene %s (month-pref from %d clear scenes)",
-                 scene.get("id"), len(items))
+        months = set(clearest_months(items))
+        candidates = [it for it in items if item_month(it) in months] or items
+        by_date = {}
+        for it in candidates:
+            by_date.setdefault(it["properties"]["datetime"][:10], []).append(it)
+        best_date = max(by_date, key=lambda d: _aoi_coverage(by_date[d], aoi))
+        scenes = by_date[best_date]
+        cover = _aoi_coverage(scenes, aoi)
+        log.info("S2 date %s: %d tile(s), AOI coverage %.0f%%",
+                 best_date, len(scenes), 100 * cover)
+        if cover < 0.5:
+            log.warning("Best S2 date covers only %.0f%% of AOI; spectral bands "
+                        "will be largely nodata.", 100 * cover)
         bands = {}
         for key in S2_NEEDED:
-            href = asset_href(scene, key)
+            hrefs = ["/vsicurl/" + asset_href(s, key) for s in scenes]
             out = os.path.join(tmp, f"s2_{key}.tif")
-            align_to_grid("/vsicurl/" + href, out, dem_path, resampling="bilinear")
+            align_to_grid(hrefs, out, dem_path, resampling="bilinear", src_nodata=0)
             ds = gdal.Open(out)
-            bands[key] = ds.ReadAsArray().astype(float)
+            arr = ds.ReadAsArray().astype(float)
+            nd = ds.GetRasterBand(1).GetNoDataValue()
             ds = None
+            bands[key] = np.where(arr == nd, np.nan, arr) if nd is not None else arr
         return bands
     except Exception as exc:  # network / STAC / asset issues - degrade gracefully
         log.warning("Sentinel-2 fetch failed (%s); running terrain-only.", exc)
