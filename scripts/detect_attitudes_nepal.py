@@ -44,6 +44,11 @@ SIGMA_Z = 2.0          # GLO-30 vertical noise (m)
 # ~4.6e-2, so 1e-2 cleanly rejects them (near-vertical share 29% -> 5%). See
 # docs/PHASE1_REPORT.md S5 and the gate-calibration follow-up issue.
 COND_RELIABLE = 1e-2
+# Map-view conditioning gate (planesight-2je): straight map traces draped on relief
+# pass the 3D conditioning but make degenerate near-vertical fits. A 1e-3 gate
+# removes them (near-vertical -> 0%) while keeping 95-98% of fits, calibrated
+# consistently across Nepal/Pakistan/Canada (the artifacts cluster below 1e-4).
+MAP_COND_RELIABLE = 1e-3
 MIN_TRACE_PTS = 8      # min sampled points for a meaningful fit
 
 
@@ -83,7 +88,7 @@ def main():
         if not np.isfinite(att.dip):
             continue
         atts.append(att)
-        if att.conditioning >= COND_RELIABLE:
+        if att.conditioning >= COND_RELIABLE and att.map_conditioning >= MAP_COND_RELIABLE:
             reliable.append(att)
 
     log.info("Fitted %d attitudes; %d reliable (conditioning >= %.0e)",
