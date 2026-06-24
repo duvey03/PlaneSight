@@ -45,6 +45,12 @@ class Attitude:
     (ARCHITECTURE.md S6.4); otherwise NaN. They are estimated by Monte-Carlo
     perturbation of the sampled elevations, so low-relief / poorly-conditioned
     traces automatically get large error bars.
+
+    ``map_conditioning`` (lambda2/lambda1 of the (x, y) projection only) ~0 means
+    the trace is straight *in map view* and so cannot constrain dip - even with
+    relief, where the 3D ``conditioning`` is fooled into passing. It is the guard
+    against the straight-segment / near-vertical pseudo-plane artifact seen in
+    automatic detection (planesight-2je).
     """
 
     strike: float
@@ -57,6 +63,7 @@ class Attitude:
     n_samples: int
     dip_uncertainty: float = float("nan")
     dip_direction_uncertainty: float = float("nan")
+    map_conditioning: float = float("nan")
 
 
 def _fit_core(pts):
@@ -129,6 +136,12 @@ def fit_plane(points, sigma_z=None, n_mc=200, seed=0) -> Attitude:
     conditioning = l2 / l1 if l1 > 0.0 else 0.0
     planarity = l3 / l2 if l2 > 0.0 else 0.0
 
+    # map-view conditioning: eigenvalue ratio of the (x, y) projection alone. ~0 =
+    # straight map trace -> dip unconstrained, even when 3D conditioning passes due
+    # to relief (planesight-2je).
+    mev = np.linalg.eigvalsh(q[:, :2].T @ q[:, :2])  # ascending
+    map_conditioning = float(mev[0] / mev[1]) if mev[1] > 0.0 else 0.0
+
     dists = q @ normal  # signed distance of each point to the fitted plane
     residual_rms = float(np.sqrt(np.mean(dists**2)))
     relief = float(pts[:, 2].max() - pts[:, 2].min())
@@ -148,4 +161,5 @@ def fit_plane(points, sigma_z=None, n_mc=200, seed=0) -> Attitude:
         n_samples=n,
         dip_uncertainty=dip_unc,
         dip_direction_uncertainty=dd_unc,
+        map_conditioning=map_conditioning,
     )
