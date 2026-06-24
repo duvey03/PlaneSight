@@ -187,8 +187,12 @@ sits in a clean gap (the artifacts cluster below `1e-4`):
 
 - **Detection eval (`wiu`)** - systematic recall + linearity + attitude-sanity of
   the detector across regions (this report's Section 5 is the first cut).
-- **Training-bootstrap go/no-go (`9vt`)** - the v2 ML gate (map-draping for labels)
-  is **not yet evaluated**; v1 classical ships independently of it.
+- **Training-bootstrap go/no-go (`9vt`) - RESOLVED: conditional no-go**
+  (`docs/BOOTSTRAP_VERDICT.md`). A label-signal registration probe found median
+  offsets of 1-2 px and 11-19% concealed contacts even for best-case hand-drawn
+  labels, so naive full-auto map-draping onto 30 m data would poison thin-feature
+  labels. A snapped + filtered bootstrap is viable only as an *auxiliary* source
+  behind a hand-seed + active learning. v1 classical ships independently of this.
 - **Adaptive per-AOI weighting (`472`)** - deferred until more diverse labeled
   regions exist; blocked on acquiring a low-relief/Shield AOI (`luj`).
 
