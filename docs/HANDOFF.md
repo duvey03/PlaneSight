@@ -96,16 +96,19 @@ strike/dip en masse from the DEM geometry. Everything to date is a validated,
 
 ## What to do next (in order)
 
+**Done since (drainage epic `3em`):** `5p3` verify, `j8t` hardening, **`xx2`
+integration** - `flag_drainage` standalone classifier (detector stays ML-swappable),
+review-flag not delete, per-trace `(is_drainage, score)`; wired into
+`detect_attitudes_nepal` (flagged excluded from attitudes + ranked review-queue CSV
+`debug/nepal_drainage_review_queue.csv`). Nepal 7063 -> 2475 flagged / 4588 kept ->
+2178 reliable; dominant strike 82 (Himalayan grain preserved).
+
 **Immediate:**
-1. **`planesight-xx2`** - integrate the filter into `ClassicalTraceDetector` as a
-   **review-flag** (route to queue, don't delete), applied **before** continuity.
-   (`5p3` verify + `j8t` hardening both DONE; default 0.5/30, DRAIN_ACCUM 15.)
-   Recommended alongside: run the drainage sweep on Pakistan/Canada to confirm the
-   knee transfers now that the algorithm is hardened.
-3. **`planesight-xx2`** - integrate the filter into `ClassicalTraceDetector` as a
-   **review-flag** (route to queue, don't delete), applied **before** continuity.
-4. **`planesight-zod`** - continuity/edge-linking fix (after drainage removal).
-5. Re-run the multi-region eval with the filter; confirm the knee transfers.
+1. **`planesight-zod`** - continuity / edge-linking fix. Detections fragment vs the
+   geologist's continuous interpretation (hysteresis breaks; `trace_skeleton` splits
+   at junctions; no gap-bridging). Apply AFTER drainage removal (now in place).
+2. Run the drainage sweep on **Pakistan/Canada** to confirm the knee transfers now
+   that the algorithm is hardened (only validated on Nepal so far).
 
 **Parallel / later:** infra remnants - `bcn` (S2 cloud compositing), `gj9` (per-AOI
 CRS policy), `1dg` (unified training GeoPackage), `85g` (correlated-error
@@ -116,8 +119,9 @@ run, styled layers, human review/triage gate) - the path to a usable tool.
 
 ## Beads map
 
-- Drainage epic **`3em`** (in_progress) -> **`5p3`** (verify) + **`j8t`** (hardening)
-  CLOSED; remaining **`xx2`** (integrate as flag, next), **`zod`** (continuity).
+- Drainage epic **`3em`** (in_progress) -> **`5p3`** + **`j8t`** + **`xx2`** CLOSED;
+  remaining **`zod`** (continuity, next). Epic ready to close once `zod` lands (or
+  defer `zod` and close the epic - it is the last child).
 - `lph` (Phase 3 strike/dip engine) in_progress; mostly done in core, `85g` remains.
 - Open infra: `bcn`, `gj9`, `1dg`, `85g`; deferred `luj` (shield data), `eu3`
   (bootstrap confirmation). Phases 0/1/2 epics closed.
