@@ -27,6 +27,7 @@ from .structure import (
 from .vectorize import (
     extract_polylines,
     pixels_to_world,
+    polylines_from_mask,
     simplify,
     thin,
     trace_skeleton,
