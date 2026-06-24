@@ -151,6 +151,25 @@ calibration and/or a map-view sinuosity filter is the recommended Phase 3 follow
 dip). This is exactly the kind of degenerate case the human-in-the-loop triage
 (S9) and the conditioning-ranked review queue are designed to surface.
 
+### 5.1 Multi-region detector evaluation (`wiu`)
+
+The detector was run on all three regions (`scripts/detector_eval.py`, DEM-only,
+gate `conditioning ≥ 1e-2`):
+
+| Region | recall | linearity | reliable attitudes | dip median | dominant strike | known grain |
+|---|---|---|---|---|---|---|
+| Nepal | 0.39 | 0.68 | 3,324 | 19.8° | ~86° (E–W) | Himalaya ≈ E–W ✓ |
+| Pakistan | 0.54 | 0.65 | 7,015 | 9.3° | ~90° (E–W) | Makran ranges ≈ E–W ✓ |
+| Canada | 0.41 | 0.76 | 4,390 | 24.6° | ~148° (NW–SE) | Cordillera ≈ NW–SE ✓ |
+
+The detector recovers 39–54% of the (incomplete) hand-drawn traces at a ~6–7%
+edge budget with clean, linear detections, and yields thousands of
+well-conditioned attitudes per region. **The decisive result: each region's
+dominant automatic strike matches its known regional structural grain** -
+E–W for the Himalaya and the Makran ranges, NW–SE for the Cordillera. The
+near-vertical artifact share is 2–5% at the `1e-2` conditioning gate, further
+reducible by the new `map_conditioning` guard (Section 2 of issue `2je`).
+
 ---
 
 ## 6. Outstanding / deferred
