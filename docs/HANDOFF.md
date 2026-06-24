@@ -65,17 +65,19 @@ strike/dip en masse from the DEM geometry. Everything to date is a validated,
    traces creeks/rivers. Probe: detected edges ~70x more valley-concave than
    background, 96% within 2px of a valley axis. **Curvature-SIGN filtering is a dead
    end** (47% vs 47%); drainage is a connectivity property needing flow accumulation.
-2. **Drainage-filter results are OVERSOLD (critical review - the big one).**
-   - The "1.3% false-negative" is **selection-biased**: only 22/408 hand-traces run
-     along valleys at all; the other 95% can't be flagged regardless. Among the
-     at-risk valley-following contacts, **~18% (4/22) get flagged** - tiny, uncertain
-     sample. Strike-valley contacts are the real FN risk.
-   - The **removed 31% was never verified to be drainage** (only that it misses the
-     mostly-cross-cutting hand-traces). Reassuring: the alignment criterion keeps 775
-     of 3916 valley-overlapping detections (oblique crossers), so it does discriminate.
-   - **31% is parameter-fragile** (23-47% across reasonable angle_tol/min_aligned).
-   - Framing: removes ~a third, NOT "most" false positives; the other ~60% (ridges/
-     divides, sub-90m tributaries) is unexplained.
+2. **Drainage filter VERIFIED (planesight-5p3 closed) - headline corrected, filter sound.**
+   - **Audit (decisive):** 30 RANDOM flagged traces rendered over hillshade + S2; the
+     geologist judged **all 30 to be genuine creeks**. The removed set is clean - the
+     filter does not eat contacts when it flags. (`scripts/drainage_verify.py`.)
+   - **Conditioned false-negative:** of the 24 hand-traces that actually run along
+     valleys (>=50% on the channel buffer), **6 get flagged = 25%** (small N, treat as
+     indicative). The old "1.3%/408" was dilution across cross-cutting traces.
+   - **Parameter sensitivity** (removed % of length / conditioned-FN %): 19-41% / 0-79%
+     across angle_tol 20-45 x min_aligned 0.4-0.6. Safe corner 0.6/25 ~22%/0%.
+   - **Decision:** keep the aggressive **0.5 / 30** default (31% removed). Since the
+     filter ships as a **review-flag, not a delete** (`xx2`), a wrongly-flagged contact
+     is recoverable in review, but an UN-flagged creek silently pollutes the kept
+     geology + strike/dip - the asymmetry favors flagging aggressively.
 3. **Drainage algorithm shortcuts** (`drainage.py`): no depression/pit-filling and
    stride subsampling (`dem[::3,::3]`) - fine on steep Nepal, **will degrade on
    low-relief Pakistan/Canada**. (Accumulation math itself is correct/conserved.)
@@ -90,18 +92,9 @@ strike/dip en masse from the DEM geometry. Everything to date is a validated,
 ## What to do next (in order)
 
 **Immediate (user-approved):**
-1. **`planesight-5p3` - verify the drainage filter (DECISIVE):**
-   - Render ~30 **random flagged (orange) traces** over hillshade+S2 for the
-     geologist to audit: creek or contact? (tests whether the removed set is really
-     drainage - never checked).
-   - Report false-negative **conditioned on valley-overlapping hand-traces** (~18% on
-     22, with small-N caveat), not the diluted 1.3%/408.
-   - Publish the **parameter-sensitivity range**, not a single 31%.
-   - HOLD the integration until this lands.
-
-**Then:**
-2. **`planesight-j8t`** - harden the drainage algorithm (block-mean downsample +
+1. **`planesight-j8t`** - harden the drainage algorithm (block-mean downsample +
    priority-flood pit-fill) BEFORE generalizing the sweep to Pakistan/Canada.
+   (`planesight-5p3` verification is DONE - filter validated, default 0.5/30 locked.)
 3. **`planesight-xx2`** - integrate the filter into `ClassicalTraceDetector` as a
    **review-flag** (route to queue, don't delete), applied **before** continuity.
 4. **`planesight-zod`** - continuity/edge-linking fix (after drainage removal).
@@ -116,8 +109,8 @@ run, styled layers, human review/triage gate) - the path to a usable tool.
 
 ## Beads map
 
-- Drainage epic **`3em`** (in_progress) -> children **`5p3`** (verify, next),
-  **`j8t`** (hardening), **`xx2`** (integrate as flag), **`zod`** (continuity).
+- Drainage epic **`3em`** (in_progress) -> **`5p3`** (verify) CLOSED; children
+  **`j8t`** (hardening, next), **`xx2`** (integrate as flag), **`zod`** (continuity).
 - `lph` (Phase 3 strike/dip engine) in_progress; mostly done in core, `85g` remains.
 - Open infra: `bcn`, `gj9`, `1dg`, `85g`; deferred `luj` (shield data), `eu3`
   (bootstrap confirmation). Phases 0/1/2 epics closed.
