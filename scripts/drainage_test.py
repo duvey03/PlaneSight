@@ -29,8 +29,7 @@ from planesight.core.derivatives import terrain as tr
 from planesight.core.detect import ClassicalTraceDetector
 from planesight.core.detect.drainage import (
     channel_proximity,
-    flow_accumulation,
-    flow_azimuth,
+    flow_network,
     is_drainage,
 )
 
@@ -189,26 +188,17 @@ def main():
     detected = ClassicalTraceDetector(min_length=8).detect(stack)  # pixel (col,row)
     hand = hand_polylines(traces_rel, dem_path, gt, epsg)
 
-    # flow accumulation computed ONCE (downsampled); only the channel threshold sweeps
-    log.info("[%s] flow accumulation (downsample %dx) ...", region, DOWNSAMPLE)
-    sub = dem[::DOWNSAMPLE, ::DOWNSAMPLE]
-    acc = flow_accumulation(sub)
-    az = flow_azimuth(sub)
-    h, w = dem.shape
-    ri = np.minimum(np.arange(h) // DOWNSAMPLE, sub.shape[0] - 1)
-    ci = np.minimum(np.arange(w) // DOWNSAMPLE, sub.shape[1] - 1)
-
-    def up(a2):
-        return a2[np.ix_(ri, ci)]
-
-    az_full = up(az)
+    # flow accumulation computed ONCE (block-mean downsample + depression fill);
+    # only the channel threshold sweeps
+    log.info("[%s] flow network (downsample %dx, filled) ...", region, DOWNSAMPLE)
+    acc_full, az_full = flow_network(dem, downsample=DOWNSAMPLE, fill=True)
     print(f"\n=== {region}: drainage pre-filter sweep "
           f"(buffer {BUFFER_PX}px, >= {int(MIN_ALIGNED*100)}% along-flow) ===")
     print("accum  channel%   detected drainage-removed   hand-trace FALSE-NEG")
     print("-" * 64)
     chosen = None
     for thr in THRESHOLDS:
-        mask = up(acc >= thr) & valid
+        mask = (acc_full >= thr) & valid
         buf, near = channel_proximity(mask, az_full, buffer_px=BUFFER_PX)
         df, dtot, ddr = classify(detected, buf, near)
         hf, htot, hdr = classify(hand, buf, near)
@@ -219,7 +209,7 @@ def main():
         if hdr / max(htot, 1) <= MAX_FALSE_NEG:
             chosen = (thr, mask, df)
     if chosen is None:
-        chosen = (THRESHOLDS[0], up(acc >= THRESHOLDS[0]) & valid, None)
+        chosen = (THRESHOLDS[0], (acc_full >= THRESHOLDS[0]) & valid, None)
     thr, channel, det_flags = chosen
     if det_flags is None:
         buf, near = channel_proximity(channel, az_full, buffer_px=BUFFER_PX)

@@ -3,11 +3,14 @@
 import numpy as np
 
 from planesight.core.detect.drainage import (
+    block_mean,
     channel_network,
     channel_proximity,
+    fill_depressions,
     flow_accumulation,
     flow_azimuth,
     flow_directions,
+    flow_network,
     is_drainage,
     trace_drainage_fraction,
 )
@@ -106,3 +109,78 @@ def test_total_accumulation_conserved():
     down = flow_directions(dem).ravel()
     sinks = down < 0
     assert np.isclose(acc.ravel()[sinks].sum(), np.isfinite(dem).sum())
+
+
+# --- j8t hardening: depression filling + block-mean downsample ---
+
+
+def test_fill_leaves_monotone_dem_unchanged():
+    # a pure tilt has a downhill path everywhere -> nothing to fill.
+    dem = _tilted_south(h=15, w=8)
+    assert np.allclose(fill_depressions(dem), dem)
+
+
+def test_fill_raises_interior_pit_and_gives_it_an_outlet():
+    dem = _tilted_south(h=20, w=10, slope=1.0)
+    dem[10, 5] -= 50.0                            # carve a deep closed pit
+    assert flow_directions(dem)[10, 5] == -1      # before fill: a sink
+    filled = fill_depressions(dem)
+    assert filled[10, 5] > dem[10, 5]             # raised toward the spill level
+    assert flow_directions(filled)[10, 5] >= 0    # now drains
+
+
+def test_fill_preserves_peaks_and_nan():
+    dem = _tilted_south(h=20, w=10)
+    dem[3, 5] += 100.0                            # a peak well above any spill
+    dem[15, 2] = np.nan
+    filled = fill_depressions(dem)
+    assert np.isclose(filled[3, 5], dem[3, 5])    # terrain above spill untouched
+    assert np.isnan(filled[15, 2])               # NaN stays a barrier
+
+
+def test_fill_eliminates_interior_sinks():
+    dem = _tilted_south(h=20, w=10)
+    dem[8, 4] -= 30.0
+    dem[12, 7] -= 20.0
+    down = flow_directions(fill_depressions(dem))
+    h, w = dem.shape
+    interior = np.ones((h, w), dtype=bool)
+    interior[0, :] = interior[-1, :] = interior[:, 0] = interior[:, -1] = False
+    assert not np.any((down < 0) & interior)      # epsilon path => no interior sink
+
+
+def test_fill_restores_channel_continuity_through_a_dam():
+    # V-valley draining south with a dam thrown across the axis: without filling the
+    # cell upstream of the dam is a sink and downstream accumulation collapses; with
+    # filling, flow spills over and the downstream channel reads high again.
+    h, w, cx = 30, 11, 5
+    rr, cc = np.indices((h, w))
+    dem = np.abs(cc - cx) * 2.0 + (h - 1 - rr) * 0.5
+    dem[15, cx] += 8.0                            # dam across the valley axis
+    acc_raw, _ = flow_network(dem, fill=False)
+    acc_fill, _ = flow_network(dem, fill=True)
+    assert acc_fill[25, cx] > acc_raw[25, cx]
+
+
+def test_block_mean_shape_and_value():
+    a = np.arange(36, dtype=float).reshape(6, 6)
+    out = block_mean(a, 3)
+    assert out.shape == (2, 2)
+    assert np.isclose(out[0, 0], a[:3, :3].mean())
+
+
+def test_block_mean_ignores_nan_within_block():
+    a = np.full((2, 2), 4.0)
+    a[0, 0] = np.nan
+    assert np.isclose(block_mean(a, 2)[0, 0], 4.0)   # mean of the 3 finite cells
+    assert np.isnan(block_mean(np.full((2, 2), np.nan), 2)[0, 0])  # all-NaN -> NaN
+
+
+def test_block_mean_preserves_narrow_channel_that_stride_skips():
+    # plateau=10 with a one-column channel=0 at col 4; stride (cols 0,3,6) steps over
+    # it, block-mean (cols 3-5) pulls its block below the plateau.
+    h, w, ch = 9, 9, 4
+    dem = np.full((h, w), 10.0)
+    dem[:, ch] = 0.0
+    assert np.all(dem[::3, ::3] == 10.0)             # stride misses the channel
+    assert block_mean(dem, 3)[0, 1] < 10.0           # block-mean keeps the signal

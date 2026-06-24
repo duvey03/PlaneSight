@@ -9,13 +9,18 @@ This computes a D8 flow network (each cell drains to its steepest-descent neighb
 and exposes a channel mask + per-cell flow azimuth, so detected traces that FOLLOW
 the drainage - overlapping it AND running along the flow direction - can be flagged.
 
-D11: numpy/scipy only. Boundary cells and pits are treated as sinks (accumulation
-piles there; the channels leading to them still read high). For speed on large DEMs,
-compute on a downsampled copy via ``channel_network(..., downsample=F)`` - drainage
-masks fine at 60-120 m.
+D11: numpy/scipy only. Before routing, the DEM is depression-filled (priority-flood
++ epsilon, ``fill_depressions``) so closed pits and flats spill through instead of
+becoming false sinks that fragment channels; on low-relief terrain this is what keeps
+the network continuous. For speed on large DEMs, compute on a downsampled copy via
+``channel_network(..., downsample=F)`` - drainage masks fine at 60-120 m. Downsampling
+uses a NaN-aware BLOCK MEAN (``block_mean``), not stride subsampling, so a narrow
+channel that a stride grid would step over still lowers its block and survives.
 """
 
 from __future__ import annotations
+
+import heapq
 
 import numpy as np
 from scipy.ndimage import binary_dilation, distance_transform_edt
@@ -27,6 +32,9 @@ __all__ = [
     "flow_directions",
     "flow_accumulation",
     "flow_azimuth",
+    "fill_depressions",
+    "block_mean",
+    "flow_network",
     "channel_network",
     "channel_proximity",
     "trace_drainage_fraction",
@@ -100,34 +108,113 @@ def flow_azimuth(dem):
     return np.where(valid, az, np.nan)
 
 
-def channel_network(dem, min_accum_cells: int = 200, downsample: int = 1):
+def fill_depressions(dem, epsilon: float = 1e-4):
+    """Priority-flood depression filling with an epsilon gradient (Barnes 2014).
+
+    Raises every closed pit and flat to just above its lowest spill point so that
+    each finite cell has a strictly-downhill path to the grid edge (or to a NaN
+    barrier). Without this, pits and flats become D8 sinks where accumulation stops
+    and channels fragment - the dominant failure mode on low-relief terrain.
+
+    The ``epsilon`` per-step lift (default 1e-4, tiny vs GLO-30's ~m vertical noise)
+    breaks flats so flow continues across filled regions; terrain already above the
+    spill level is left unchanged. NaN cells act as barriers and stay NaN.
+    """
+    a = np.asarray(dem, dtype=float)
+    if a.ndim != 2:
+        raise ValueError("dem must be 2D")
+    h, w = a.shape
+    finite = np.isfinite(a)
+    filled = a.copy()
+    closed = ~finite                              # NaN are barriers, never filled
+    border = np.zeros((h, w), dtype=bool)
+    border[0, :] = border[-1, :] = border[:, 0] = border[:, -1] = True
+    nan_adj = (binary_dilation(~finite) & finite) if (~finite).any() \
+        else np.zeros((h, w), dtype=bool)
+    seed = finite & (border | nan_adj)            # outlets: edge + cells touching NaN
+    heap = []
+    for r, c in zip(*np.where(seed)):
+        heapq.heappush(heap, (float(a[r, c]), int(r), int(c)))
+        closed[r, c] = True
+    nbrs = ((-1, 0), (1, 0), (0, -1), (0, 1),
+            (-1, -1), (-1, 1), (1, -1), (1, 1))
+    while heap:
+        e, r, c = heapq.heappop(heap)
+        for dr, dc in nbrs:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < h and 0 <= nc < w and not closed[nr, nc]:
+                ne = a[nr, nc]
+                if ne <= e + epsilon:             # pit/flat: lift to spill + epsilon
+                    ne = e + epsilon
+                filled[nr, nc] = ne
+                closed[nr, nc] = True
+                heapq.heappush(heap, (ne, nr, nc))
+    return filled
+
+
+def block_mean(dem, factor: int):
+    """NaN-aware block-mean downsample by an integer ``factor`` (cropping any
+    remainder rows/cols). Each output cell is the mean of the finite values in its
+    ``factor x factor`` block (NaN only where the whole block is NaN) - unlike stride
+    subsampling, a narrow low channel still pulls its block down and is not skipped.
+    """
+    a = np.asarray(dem, dtype=float)
+    if factor < 1:
+        raise ValueError("factor must be >= 1")
+    if factor == 1:
+        return a
+    h, w = a.shape
+    big_h, big_w = h // factor, w // factor
+    if big_h == 0 or big_w == 0:
+        return a
+    crop = a[:big_h * factor, :big_w * factor].reshape(big_h, factor, big_w, factor)
+    fin = np.isfinite(crop)
+    n = fin.sum(axis=(1, 3))
+    s = np.where(fin, crop, 0.0).sum(axis=(1, 3))
+    return np.where(n > 0, s / np.maximum(n, 1), np.nan)
+
+
+def flow_network(dem, downsample: int = 1, fill: bool = True, epsilon: float = 1e-4):
+    """Flow accumulation + flow azimuth at the FULL grid, with hardening applied.
+
+    Block-mean downsamples (``downsample`` > 1), depression-fills (``fill``), routes
+    D8, then nearest-upsamples the accumulation and azimuth back to the input shape.
+    Returns ``(acc, az)`` both shape (h, w) - accumulation in *downsampled* cells.
+    """
+    a = np.asarray(dem, dtype=float)
+    if downsample < 1:
+        raise ValueError("downsample must be >= 1")
+    sub = block_mean(a, downsample) if downsample > 1 else a
+    if fill:
+        sub = fill_depressions(sub, epsilon=epsilon)
+    acc = flow_accumulation(sub)
+    az = flow_azimuth(sub)
+    if downsample > 1:
+        h, w = a.shape
+        ri = np.minimum(np.arange(h) // downsample, sub.shape[0] - 1)
+        ci = np.minimum(np.arange(w) // downsample, sub.shape[1] - 1)
+        acc = acc[np.ix_(ri, ci)]
+        az = az[np.ix_(ri, ci)]
+    return acc, az
+
+
+def channel_network(dem, min_accum_cells: int = 200, downsample: int = 1,
+                    fill: bool = True):
     """Channel mask (high flow accumulation) + per-cell flow azimuth, at full grid.
 
     Args:
         dem: 2D elevation array.
         min_accum_cells: accumulation threshold (in *downsampled* cells) above which
             a cell is a channel.
-        downsample: compute flow on ``dem[::downsample, ::downsample]`` for speed,
-            then nearest-upsample the mask/azimuth back to the full grid.
+        downsample: block-mean downsample factor for speed (then nearest-upsampled).
+        fill: depression-fill before routing (recommended; see ``fill_depressions``).
 
     Returns:
         ``(channel_mask, flow_az)`` both shape (h, w): boolean channels and the flow
         azimuth (deg, NaN off-channel/at sinks).
     """
-    a = np.asarray(dem, dtype=float)
-    if downsample < 1:
-        raise ValueError("downsample must be >= 1")
-    sub = a[::downsample, ::downsample] if downsample > 1 else a
-    acc = flow_accumulation(sub)
-    az = flow_azimuth(sub)
-    mask = acc >= float(min_accum_cells)
-    if downsample > 1:
-        h, w = a.shape
-        ri = np.minimum(np.arange(h) // downsample, sub.shape[0] - 1)
-        ci = np.minimum(np.arange(w) // downsample, sub.shape[1] - 1)
-        mask = mask[np.ix_(ri, ci)]
-        az = az[np.ix_(ri, ci)]
-    return mask, az
+    acc, az = flow_network(dem, downsample=downsample, fill=fill)
+    return acc >= float(min_accum_cells), az
 
 
 def channel_proximity(channel_mask, flow_az, buffer_px: int = 2):

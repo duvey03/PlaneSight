@@ -43,8 +43,7 @@ from planesight.core.derivatives import terrain as tr
 from planesight.core.detect import ClassicalTraceDetector, canny, disk
 from planesight.core.detect.drainage import (
     channel_proximity,
-    flow_accumulation,
-    flow_azimuth,
+    flow_network,
     is_drainage,
 )
 
@@ -64,7 +63,8 @@ N_WINDOWS = 4
 # drainage pre-filter (the chosen knee from scripts/drainage_test.py)
 DRAIN_BANDS = ("profile_curvature", "curvature", "slope")
 DRAIN_DS = 3           # flow downsample
-DRAIN_ACCUM = 8        # channel accumulation threshold (downsampled cells)
+DRAIN_ACCUM = 15       # channel accum threshold (downsampled cells); recalibrated
+#                        8->15 for the hardened depression-filled network (j8t)
 DRAIN_ALIGNED = 0.5    # >=50% along-flow length -> drainage
 UPSCALE = 5            # render scale for legibility
 S2_BANDS = ("blue", "red", "nir", "swir16", "swir22")
@@ -180,13 +180,10 @@ def classify_detections(dem, valid):
     _, terr = build_terrain_stack(dem, RES, names=DRAIN_BANDS)
     polys = ClassicalTraceDetector(min_length=8).detect(
         np.stack([terr[b] for b in DRAIN_BANDS]))  # (col, row)
-    sub = dem[::DRAIN_DS, ::DRAIN_DS]
-    acc, az = flow_accumulation(sub), flow_azimuth(sub)
     h, w = dem.shape
-    ri = np.minimum(np.arange(h) // DRAIN_DS, sub.shape[0] - 1)
-    ci = np.minimum(np.arange(w) // DRAIN_DS, sub.shape[1] - 1)
-    channel = (acc >= DRAIN_ACCUM)[np.ix_(ri, ci)] & valid
-    buf, near = channel_proximity(channel, az[np.ix_(ri, ci)], buffer_px=2)
+    acc, az = flow_network(dem, downsample=DRAIN_DS, fill=True)
+    channel = (acc >= DRAIN_ACCUM) & valid
+    buf, near = channel_proximity(channel, az, buffer_px=2)
     keep = np.zeros(dem.shape, dtype=bool)
     drain = np.zeros(dem.shape, dtype=bool)
     n_drain = 0
