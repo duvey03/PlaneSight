@@ -135,23 +135,42 @@ def windows(hand_mask, shape):
     return win, picks
 
 
+def _tile(base_gray, overlays, label):
+    """base_gray: (h,w) uint8; overlays: list of (mask, rgb). Returns a labeled PIL tile."""
+    img = np.dstack([base_gray, base_gray, base_gray])
+    for mask, rgb in overlays:
+        img[binary_dilation(mask, iterations=1)] = rgb
+    im = Image.fromarray(img).resize((img.shape[1] * UPSCALE, img.shape[0] * UPSCALE),
+                                     Image.NEAREST)
+    canvas = Image.new("RGB", (im.width, im.height + 18), (20, 20, 20))
+    canvas.paste(im, (0, 18))
+    ImageDraw.Draw(canvas).text((3, 4), label, fill=(255, 255, 255))
+    return canvas
+
+
 def panel(out_dir, region, win, idx, ctr, hill, channel, keep, drain):
     r, c = ctr
     half = win // 2
     sl = (slice(max(0, r - half), max(0, r - half) + win),
           slice(max(0, c - half), max(0, c - half) + win))
     g = (np.clip(np.nan_to_num(hill[sl]), 0, 1) * 255).astype(np.uint8)
-    img = np.dstack([g, g, g])
-    img[binary_dilation(channel[sl], iterations=1)] = [40, 60, 130]   # faint blue channels
-    img[binary_dilation(keep[sl], iterations=1)] = [60, 255, 80]       # green = kept (geology)
-    img[binary_dilation(drain[sl], iterations=1)] = [255, 60, 60]      # red  = drainage-flagged
-    im = Image.fromarray(img).resize((win * UPSCALE, win * UPSCALE), Image.NEAREST)
-    canvas = Image.new("RGB", (im.width, im.height + 18), (20, 20, 20))
-    canvas.paste(im, (0, 18))
-    ImageDraw.Draw(canvas).text((3, 4), "green=kept  red=drainage-flagged  blue=channel",
-                                fill=(255, 255, 255))
+    cyan, blue, green, red = [60, 200, 255], [70, 120, 255], [60, 255, 80], [255, 60, 60]
+    tiles = [
+        _tile(g, [], "1. hillshade (raw)"),
+        _tile(g, [(keep[sl] | drain[sl], cyan)], "2. all detections"),
+        _tile(g, [(channel[sl], blue)], "3. drainage network (flow)"),
+        _tile(g, [(keep[sl], green), (drain[sl], red)],
+              "4. result: green=kept  red=drainage"),
+    ]
+    gap = 6
+    total_w = sum(t.width for t in tiles) + gap * (len(tiles) - 1)
+    strip = Image.new("RGB", (total_w, tiles[0].height), (20, 20, 20))
+    x = 0
+    for t in tiles:
+        strip.paste(t, (x, 0))
+        x += t.width + gap
     path = os.path.join(out_dir, f"{region}_drainage_window{idx}.png")
-    canvas.save(path)
+    strip.save(path)
     return path
 
 
