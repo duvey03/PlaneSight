@@ -107,6 +107,22 @@ def test_conditioning_flags_flat_straight_trace():
     assert att.conditioning < 1e-9
 
 
+def test_map_conditioning_catches_straight_map_trace_on_bumpy_terrain():
+    # The automatic-detection artifact (planesight-2je): a trace that is straight
+    # in MAP view but drapes over real (non-planar) topography. The wiggling z
+    # gives the 3D cloud 2D extent, so 3D conditioning is fooled into passing -
+    # but map_conditioning (x,y only) correctly sees the straight map trace.
+    t = np.linspace(0.0, 200.0, 40)
+    z = 6.0 * np.sin(t / 12.0) + 0.1 * t  # non-linear relief along a straight line
+    straight = np.column_stack([t, np.zeros_like(t), z])  # y constant -> straight map
+    att = fit_plane(straight)
+    assert att.conditioning > 1e-3        # 3D fit looks 'constrained'...
+    assert att.map_conditioning < 1e-9    # ...but the map trace is straight
+    # a sinuous map trace on the same relief has genuine 2D map spread
+    good = fit_plane(np.column_stack([t, 15.0 * np.sin(t / 20.0), z]))
+    assert good.map_conditioning > 0.01
+
+
 def test_planarity_flags_folded_trace():
     # Start from a planar trace, then bend it off-plane (systematic curvature).
     nrm = plane_normal(30.0, 90.0)
