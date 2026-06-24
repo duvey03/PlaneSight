@@ -78,9 +78,14 @@ strike/dip en masse from the DEM geometry. Everything to date is a validated,
      filter ships as a **review-flag, not a delete** (`xx2`), a wrongly-flagged contact
      is recoverable in review, but an UN-flagged creek silently pollutes the kept
      geology + strike/dip - the asymmetry favors flagging aggressively.
-3. **Drainage algorithm shortcuts** (`drainage.py`): no depression/pit-filling and
-   stride subsampling (`dem[::3,::3]`) - fine on steep Nepal, **will degrade on
-   low-relief Pakistan/Canada**. (Accumulation math itself is correct/conserved.)
+3. **Drainage algorithm shortcuts - FIXED (planesight-j8t closed, commit a701bef).**
+   `drainage.py` now depression-fills (priority-flood + epsilon, `fill_depressions`)
+   and block-mean downsamples (`block_mean`) via the `flow_network` pipeline, so
+   channels stay continuous and narrow channels survive downsampling - the regime
+   that would have degraded on low-relief Pakistan/Canada. Filling raised
+   accumulation, so `DRAIN_ACCUM` was recalibrated 8->15 (network 22%->15% of map,
+   same ~31% removal the geologist audited). Still UNTESTED on Pakistan/Canada - run
+   the sweep there next to confirm the knee transfers.
 4. **Detections are fragmented vs the geologist's continuous interpretation**
    (hysteresis breaks; `trace_skeleton` splits at junctions; no gap-bridging).
 5. **Conditioning gate calibrated only on auto-detected Nepal traces** (`2je`); the
@@ -91,10 +96,12 @@ strike/dip en masse from the DEM geometry. Everything to date is a validated,
 
 ## What to do next (in order)
 
-**Immediate (user-approved):**
-1. **`planesight-j8t`** - harden the drainage algorithm (block-mean downsample +
-   priority-flood pit-fill) BEFORE generalizing the sweep to Pakistan/Canada.
-   (`planesight-5p3` verification is DONE - filter validated, default 0.5/30 locked.)
+**Immediate:**
+1. **`planesight-xx2`** - integrate the filter into `ClassicalTraceDetector` as a
+   **review-flag** (route to queue, don't delete), applied **before** continuity.
+   (`5p3` verify + `j8t` hardening both DONE; default 0.5/30, DRAIN_ACCUM 15.)
+   Recommended alongside: run the drainage sweep on Pakistan/Canada to confirm the
+   knee transfers now that the algorithm is hardened.
 3. **`planesight-xx2`** - integrate the filter into `ClassicalTraceDetector` as a
    **review-flag** (route to queue, don't delete), applied **before** continuity.
 4. **`planesight-zod`** - continuity/edge-linking fix (after drainage removal).
@@ -109,8 +116,8 @@ run, styled layers, human review/triage gate) - the path to a usable tool.
 
 ## Beads map
 
-- Drainage epic **`3em`** (in_progress) -> **`5p3`** (verify) CLOSED; children
-  **`j8t`** (hardening, next), **`xx2`** (integrate as flag), **`zod`** (continuity).
+- Drainage epic **`3em`** (in_progress) -> **`5p3`** (verify) + **`j8t`** (hardening)
+  CLOSED; remaining **`xx2`** (integrate as flag, next), **`zod`** (continuity).
 - `lph` (Phase 3 strike/dip engine) in_progress; mostly done in core, `85g` remains.
 - Open infra: `bcn`, `gj9`, `1dg`, `85g`; deferred `luj` (shield data), `eu3`
   (bootstrap confirmation). Phases 0/1/2 epics closed.
