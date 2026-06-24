@@ -39,6 +39,7 @@ __all__ = [
     "channel_proximity",
     "trace_drainage_fraction",
     "is_drainage",
+    "flag_drainage",
 ]
 
 _SQRT2 = float(np.sqrt(2.0))
@@ -273,3 +274,43 @@ def is_drainage(poly_xy, channel_buffer, nearest_flow_az,
     _, aligned = trace_drainage_fraction(poly_xy, channel_buffer, nearest_flow_az,
                                          angle_tol_deg=angle_tol_deg)
     return aligned >= min_aligned_fraction
+
+
+def flag_drainage(traces, dem, *, downsample: int = 3, min_accum_cells: int = 15,
+                  buffer_px: int = 2, min_aligned_fraction: float = 0.5,
+                  angle_tol_deg: float = 30.0, valid_mask=None):
+    """Classify each detected trace as drainage (runs along a channel) or not.
+
+    The standalone post-detection step the pipeline calls AFTER any detector - the
+    detector stays terrain-agnostic (band-in, polylines-out) and swappable, while this
+    builds the hardened flow network once and scores every trace against it.
+
+    This is a review-FLAG, not a filter: NO trace is dropped. Returns a list aligned
+    with ``traces`` of ``(is_drainage: bool, aligned_fraction: float)``. The
+    ``aligned_fraction`` (0..1, how much of the trace runs along the flow) doubles as
+    the review-queue ranking score - rank flagged traces by it (most creek-like first).
+
+    Args:
+        traces: detector output as (n, 2) pixel ``(col, row)`` vertex arrays - i.e.
+            ``detect(stack, transform=None)``; world coords cannot index the grid.
+        dem: 2D elevation array on the SAME grid the traces were detected on.
+        downsample, min_accum_cells, buffer_px, min_aligned_fraction, angle_tol_deg:
+            flow + alignment parameters. Defaults are the Nepal-calibrated operating
+            point (planesight-5p3 verification + j8t hardening: filled network, 31%
+            removal on the flat part of the false-negative curve).
+        valid_mask: optional finite-DEM mask AND-ed with the channel network.
+
+    Returns:
+        ``list[tuple[bool, float]]`` - one ``(is_drainage, score)`` per input trace.
+    """
+    acc, az = flow_network(dem, downsample=downsample, fill=True)
+    channel = acc >= float(min_accum_cells)
+    if valid_mask is not None:
+        channel = channel & np.asarray(valid_mask, dtype=bool)
+    buf, near = channel_proximity(channel, az, buffer_px=buffer_px)
+    out = []
+    for poly in traces:
+        _, aligned = trace_drainage_fraction(poly, buf, near,
+                                             angle_tol_deg=angle_tol_deg)
+        out.append((bool(aligned >= min_aligned_fraction), float(aligned)))
+    return out

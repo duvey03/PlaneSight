@@ -26,6 +26,8 @@ from planesight.core.attitude import fit_plane, sample_trace
 from planesight.core.data import fetch_dem
 from planesight.core.derivatives import build_terrain_stack
 from planesight.core.detect import ClassicalTraceDetector
+from planesight.core.detect.drainage import flag_drainage
+from planesight.core.detect.vectorize import pixels_to_world
 
 gdal.UseExceptions()
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -50,6 +52,10 @@ COND_RELIABLE = 1e-2
 # consistently across Nepal/Pakistan/Canada (the artifacts cluster below 1e-4).
 MAP_COND_RELIABLE = 1e-3
 MIN_TRACE_PTS = 8      # min sampled points for a meaningful fit
+# Drainage review-flag (planesight-xx2): tag creek-following traces and keep them OUT
+# of the attitude stats (recoverable, not deleted). Calibrated operating point from
+# the verification + hardening (planesight-5p3/j8t): filled flow net, accum 15.
+DRAIN_DS, DRAIN_ACCUM, DRAIN_ALIGNED = 3, 15, 0.5
 
 
 def main():
@@ -74,14 +80,26 @@ def main():
     stack = np.stack([terr[b] for b in BANDS])
 
     log.info("Detecting traces (Canny on %s)...", "+".join(BANDS))
+    # detect in PIXEL (col,row) space so the drainage classifier can index the grid;
+    # kept traces are converted to world coords for sampling below.
     traces = ClassicalTraceDetector(min_length=MIN_TRACE_PTS, simplify_tol=1.0).detect(
-        stack, transform=gt)
+        stack)
     log.info("Auto-detected %d candidate traces", len(traces))
 
-    # fit strike/dip along each detected trace
+    # drainage review-flag: tag creek-following traces and keep them out of the
+    # attitude stats (retained, not deleted - recoverable in review).
+    labels = flag_drainage(traces, dem, downsample=DRAIN_DS, min_accum_cells=DRAIN_ACCUM,
+                           min_aligned_fraction=DRAIN_ALIGNED, valid_mask=np.isfinite(dem))
+    kept = [(t, s) for t, (d, s) in zip(traces, labels) if not d]
+    flagged = [(t, s) for t, (d, s) in zip(traces, labels) if d]
+    log.info("Drainage review-flag: %d kept, %d flagged (retained, excluded from "
+             "attitudes)", len(kept), len(flagged))
+
+    # fit strike/dip along each KEPT trace (pixel (col,row) -> world for sampling)
     atts, reliable = [], []
-    for tr in traces:
-        pts = sample_trace(tr, dem, gt, spacing=RES, nodata=None)
+    for tr_px, _ in kept:
+        world = pixels_to_world(tr_px[:, ::-1], gt)
+        pts = sample_trace(world, dem, gt, spacing=RES, nodata=None)
         if len(pts) < MIN_TRACE_PTS:
             continue
         att = fit_plane(pts, sigma_z=SIGMA_Z)
@@ -98,6 +116,8 @@ def main():
         strikes = np.array([a.strike % 180 for a in reliable])
         print("\n=== Automatic strike/dip on Nepal (reliable fits) ===")
         print(f"traces detected : {len(traces)}")
+        print(f"drainage-flagged: {len(flagged)} (retained for review, not fitted)")
+        print(f"kept for fitting: {len(kept)}")
         print(f"reliable fits   : {len(reliable)}")
         print(f"dip    median {np.median(dips):.1f}  IQR [{np.percentile(dips,25):.1f}, "
               f"{np.percentile(dips,75):.1f}]  range [{dips.min():.1f}, {dips.max():.1f}]")
@@ -120,6 +140,18 @@ def main():
         print(f"\nWrote {csv_path}")
     else:
         log.warning("No reliable attitudes - check detection/conditioning gate.")
+
+    # drainage review queue: flagged traces ranked most-creek-like first (score = the
+    # fraction of the trace running along the flow). The future GUI review gate
+    # consumes this; for now it is the auditable record of what was set aside.
+    if flagged:
+        rq_path = os.path.join(OUT_DIR, "nepal_drainage_review_queue.csv")
+        with open(rq_path, "w", newline="") as fh:
+            wr = csv.writer(fh)
+            wr.writerow(["rank", "drainage_score", "n_vertices"])
+            for i, (tr_px, s) in enumerate(sorted(flagged, key=lambda x: -x[1]), 1):
+                wr.writerow([i, f"{s:.3f}", len(tr_px)])
+        print(f"Wrote {rq_path} ({len(flagged)} flagged, ranked by score)")
 
 
 if __name__ == "__main__":

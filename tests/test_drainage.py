@@ -7,6 +7,7 @@ from planesight.core.detect.drainage import (
     channel_network,
     channel_proximity,
     fill_depressions,
+    flag_drainage,
     flow_accumulation,
     flow_azimuth,
     flow_directions,
@@ -184,3 +185,31 @@ def test_block_mean_preserves_narrow_channel_that_stride_skips():
     dem[:, ch] = 0.0
     assert np.all(dem[::3, ::3] == 10.0)             # stride misses the channel
     assert block_mean(dem, 3)[0, 1] < 10.0           # block-mean keeps the signal
+
+
+# --- xx2 integration: standalone drainage review-flag ---
+
+
+def test_flag_drainage_flags_along_keeps_crossing():
+    # steep V-valley draining south down col cx: a trace along the axis is drainage,
+    # one crossing it is not. flag_drainage builds the flow network itself.
+    h, w, cx = 40, 15, 7
+    rr, cc = np.indices((h, w))
+    dem = np.abs(cc - cx) * 3.0 + (h - 1 - rr) * 0.5
+    along = np.array([[cx, 6], [cx, 36]], dtype=float)     # (col,row) down the axis
+    crossing = np.array([[1, 20], [13, 20]], dtype=float)  # across the valley
+    labels = flag_drainage([along, crossing], dem, downsample=1, min_accum_cells=8)
+    assert labels[0][0] is True            # along-flow -> drainage
+    assert labels[1][0] is False           # crossing -> kept
+    assert labels[0][1] > labels[1][1]     # along scores more creek-like (rank score)
+
+
+def test_flag_drainage_preserves_every_trace():
+    # review-flag, not a filter: one label per input, nothing dropped.
+    dem = _tilted_south(20, 10)
+    traces = [np.array([[1, 1], [1, 8]], dtype=float),
+              np.array([[3, 3], [7, 3]], dtype=float),
+              np.array([[5, 5], [5, 9]], dtype=float)]
+    labels = flag_drainage(traces, dem, downsample=1, min_accum_cells=5)
+    assert len(labels) == len(traces)
+    assert all(isinstance(d, bool) and 0.0 <= s <= 1.0 for d, s in labels)
