@@ -1,133 +1,136 @@
 # PlaneSight - Session Handoff
 
-**Date:** 2026-06-23
-**Purpose:** Orient a fresh session quickly. Read `ARCHITECTURE.md` first (design,
-science, decisions D1-D15, open questions Q1-Q10); this doc is the current state,
-loose ends, and recommended next steps.
+**Updated:** 2026-06-24. Supersedes the Phase-0 handoff.
+
+PlaneSight = a QGIS plugin that, for any AOI, aggregates global DEM (Copernicus
+GLO-30) + Sentinel-2, auto-detects geological bedding/contact traces, and computes
+strike/dip en masse from the DEM geometry. Everything to date is a validated,
+**headless** Python core (`planesight/core/`) - the QGIS GUI is not yet built. Read
+`ARCHITECTURE.md` for design/decisions (D1-D15) and `docs/PHASE1_REPORT.md` +
+`docs/BOOTSTRAP_VERDICT.md` for the science.
 
 ---
 
-## TL;DR
+## TL;DR state
 
-PlaneSight is a planned QGIS plugin that derives geological strike/dip from free
-global DEM + Sentinel-2 data. **The core scientific premise is now validated
-end-to-end on real data.** Phase 0 (data backbone) and the Phase 3 core
-(strike/dip engine) are largely built and tested; the big unproven piece is
-**automated trace detection** (Phase 1 research -> Phase 2). Repo is public, CI is
-green.
+- **Phases 0-2 are DONE and on `main`** (PRs #1, #2 merged): data fetch, derivative
+  engine, plane-fit strike/dip engine, classical trace detector, scoring.
+- **The full chain works end to end on real data**: raw AOI -> GLO-30 -> auto
+  traces -> strike/dip that recovers the known regional structural grain in three
+  regions (Nepal/Pakistan/Canada).
+- **Current WIP (branch `feat/drainage-filter`, NOT merged):** a flow-accumulation
+  drainage pre-filter. Built + unit-tested, but a critical review found the Nepal
+  results **oversold** - verification is required before it's trustworthy (below).
+- **Pending the user (just approved):** build the drainage verification (audit panel
+  + honest metrics) before integrating the filter.
 
-- Repo: https://github.com/duvey03/PlaneSight (root `C:\PlaneSight`, WSL `/mnt/c/PlaneSight`)
-- Dual-licensed: code GPL-3.0, seed data CC-BY-4.0
-- 21 commits; two CI jobs green (pure-core lint+tests; GDAL integration via micromamba)
-
-## Where everything lives
-
-```
-ARCHITECTURE.md                  Source of truth: design, science (S6), decisions, roadmap
-docs/DATASETS.md                 Open dataset survey (validation/training sources)
-docs/HANDOFF.md                  This file
-planesight/                      The QGIS plugin package
-  core/                          Pure-Python, QGIS-free, numpy/scipy/GDAL only (CI-tested)
-    data/  stac.py sources.py fetch.py   AOI -> STAC -> DEM + Sentinel-2 (validated)
-    attitude/ plane_fit.py sample.py     PCA plane fit + DEM sampling + uncertainty
-    detect/ base.py                      TraceDetector ABC + registry (no impl yet)
-    derivatives/                         STUB (P0e)
-  gui/ tasks/ resources/         QGIS/Qt shell, QgsTask harness, SVG/QML symbols
-tests/                           pytest (pure core + GDAL-gated integration tests)
-scripts/                         dev helpers (see below)
-data/raw/                        seed traces: Canada/Nepal/Pakistan (+ DATA_MANIFEST.md)
-debug/                           generated outputs (gitignored): Nepal slice results
-.beads/                          issue tracker (JSONL tracked in git)
-```
+---
 
 ## What's done (verified)
 
-| Capability | Status | Evidence |
+| Capability | Where | Status |
 |---|---|---|
-| QGIS plugin scaffold + CI + dev env | done (`vm9` closed) | loads; CI green |
-| AOI -> STAC fetch (GLO-30 DEM + Sentinel-2, anonymous AWS) | done (`e8r` closed) | live-verified; GDAL path tested headless + CI |
-| Sentinel-2 <5% cloud + empirical dry-season selection (D15) | done | recovers real climatology (Pakistan Oct-Dec, Nepal Nov) |
-| Strike/dip plane fit + conditioning/planarity metrics (D12) | done | synthetic gate D14 passed; exact recovery |
-| DEM sampling along traces (densify + bilinear) | done | bilinear exact on linear fields; sample->fit recovery test |
-| Uncertainty budget (Monte-Carlo, S6.4) | done v1 (caveat below) | grows with noise, blows up for degenerate traces |
-| **Nepal vertical slice (first REAL measurements)** | done | median dip 28 deg, mean strike ~288 deg dipping NNE = Himalayan grain; 96% reliable |
-| Strike/dip QGIS symbology (2-layer SVG + dip labels) | done | `debug/nepal_attitudes.qml` |
-| Automated trace **detection** | NOT STARTED | the key gap |
+| AOI -> STAC -> GLO-30 DEM + Sentinel-2 (anonymous AWS) | `core/data/` | done |
+| Coverage-aware S2 same-date mosaic + nodata handling | `core/data/align.py`, harness | done |
+| Derivative engine (slope/aspect/hillshade/tpi/curvature; S2 indices; named stacks) | `core/derivatives/` | done |
+| Plane-fit strike/dip (SVD) + conditioning/planarity + **map_conditioning** + MC uncertainty | `core/attitude/plane_fit.py` | done |
+| Positive-unlabeled scoring (recall-at-budget) + label-free linearity | `core/detect/score.py`, `linearity.py` | done |
+| Canny operator + vectorize (thin/trace/simplify) + `ClassicalTraceDetector` | `core/detect/` | done |
+| End-to-end auto strike/dip on Nepal | `scripts/detect_attitudes_nepal.py` | done |
+| Multi-region detector eval (recall/linearity + dominant strikes) | `scripts/detector_eval.py` | done |
+| Drainage pre-filter (D8 flow accum + classifier) | `core/detect/drainage.py` | **WIP, see issues** |
 
-## How to run things (dev quickstart)
+**~158 pure tests green; ruff clean.** Headless GDAL via micromamba env `gdal`:
+`MAMBA_ROOT_PREFIX=$HOME/micromamba PYTHONPATH=$PWD $HOME/bin/micromamba run -n gdal python ...`
 
-Pure-core work needs no GDAL/QGIS. The raster I/O edge needs GDAL (headless via
-no-sudo micromamba; QGIS is the integration target).
+## Key findings (the science)
 
-```bash
-# pure tests + lint (fast inner loop)
-python3 -m pytest -q
-ruff check planesight tests scripts          # ALWAYS gate commits on this
+- **DEM curvature/slope are the dominant contact exposers** across all 3 regions;
+  Sentinel-2 (iron-oxide) is a useful secondary, seasonally sensitive.
+- **Auto strike/dip works:** Nepal gave 3,324 well-conditioned attitudes (median dip
+  ~20 deg, dominant strike ~86 deg = Himalayan grain) with no digitizing. Dominant
+  strikes match known grain in all 3 regions (Himalaya/Makran E-W, Cordillera NW-SE).
+- **`map_conditioning` gate** (lambda2/lambda1 of the x,y projection) removes the
+  straight-map-trace near-vertical artifact the 3D conditioning misses (gate 1e-3:
+  near-vertical 29%->~0%, keeps 95-98% of fits).
+- **ML bootstrap (planesight-9vt): conditional no-go, then softened** - map-draping
+  for ML labels is terrain-dependent, not a flat no-go (`docs/BOOTSTRAP_VERDICT.md`).
 
-# headless GDAL (one-time): pin to your QGIS GDAL if known
-scripts/setup_dev_gdal.sh 'gdal>=3.8'
+---
 
-# run GDAL tests + the Nepal slice under micromamba
-MAMBA_ROOT_PREFIX=$HOME/micromamba PYTHONPATH=$PWD \
-  $HOME/bin/micromamba run -n gdal pytest
-MAMBA_ROOT_PREFIX=$HOME/micromamba PYTHONPATH=$PWD \
-  $HOME/bin/micromamba run -n gdal python scripts/nepal_slice.py
+## Issues / open problems identified
 
-# QGIS integration checkpoints (paste into QGIS Python Console)
-scripts/qgis_console_checkpoint.py     # fetch + load DEM/S2
-scripts/qgis_style_attitudes.py        # robustly style attitudes + save .qml
-```
+1. **Drainage dominates the false lineaments (geologist-confirmed, quantified).** The
+   detector is a generic topographic break-line detector; in dissected terrain it
+   traces creeks/rivers. Probe: detected edges ~70x more valley-concave than
+   background, 96% within 2px of a valley axis. **Curvature-SIGN filtering is a dead
+   end** (47% vs 47%); drainage is a connectivity property needing flow accumulation.
+2. **Drainage-filter results are OVERSOLD (critical review - the big one).**
+   - The "1.3% false-negative" is **selection-biased**: only 22/408 hand-traces run
+     along valleys at all; the other 95% can't be flagged regardless. Among the
+     at-risk valley-following contacts, **~18% (4/22) get flagged** - tiny, uncertain
+     sample. Strike-valley contacts are the real FN risk.
+   - The **removed 31% was never verified to be drainage** (only that it misses the
+     mostly-cross-cutting hand-traces). Reassuring: the alignment criterion keeps 775
+     of 3916 valley-overlapping detections (oblique crossers), so it does discriminate.
+   - **31% is parameter-fragile** (23-47% across reasonable angle_tol/min_aligned).
+   - Framing: removes ~a third, NOT "most" false positives; the other ~60% (ridges/
+     divides, sub-90m tributaries) is unexplained.
+3. **Drainage algorithm shortcuts** (`drainage.py`): no depression/pit-filling and
+   stride subsampling (`dem[::3,::3]`) - fine on steep Nepal, **will degrade on
+   low-relief Pakistan/Canada**. (Accumulation math itself is correct/conserved.)
+4. **Detections are fragmented vs the geologist's continuous interpretation**
+   (hysteresis breaks; `trace_skeleton` splits at junctions; no gap-bridging).
+5. **Conditioning gate calibrated only on auto-detected Nepal traces** (`2je`); the
+   1e-2/1e-3 thresholds may need per-region tuning.
+6. **Everything is headless** - no QGIS plugin GUI/review-gate yet.
 
-## Loose ends & caveats
+---
 
-1. **Uncertainty is an optimistic lower bound.** The Monte-Carlo assumes
-   *independent* per-point DEM noise; real GLO-30 error is spatially correlated,
-   so well-sampled traces read unrealistically tight (~0.3 deg). Refinement
-   tracked as **`planesight-85g`** (correlated random-tilt term). It DOES
-   correctly flag low-relief/degenerate traces.
-2. **Label Y-sign unverified.** The 15 px dip-direction label offset uses
-   `-15*cos(...)`; if labels land up-dip in your QGIS, flip to `+15` (one spot in
-   `attitudes_strike_dip.qml` / `qgis_style_attitudes.py`).
-3. **Hand-authored QML may drift by QGIS version.** If `nepal_attitudes.qml`
-   misbehaves, run `scripts/qgis_style_attitudes.py` (PyQGIS, always valid) - it
-   re-saves a correct `.qml`.
-4. **GDAL version pin.** Dev/CI use GDAL ~3.13; should be re-pinned to the user's
-   QGIS GDAL (Help > About) for fidelity. Code uses only stable Warp/vsicurl APIs,
-   so risk is low.
-5. **Phase-3 engine runs on HAND-DRAWN traces.** Wiring it to *detected* traces
-   waits on detection (Phase 2).
-6. **Process note:** run `ruff` BEFORE committing (an E402 slipped to main once,
-   fixed immediately).
+## What to do next (in order)
 
-## Issue board (Beads)
+**Immediate (user-approved):**
+1. **`planesight-5p3` - verify the drainage filter (DECISIVE):**
+   - Render ~30 **random flagged (orange) traces** over hillshade+S2 for the
+     geologist to audit: creek or contact? (tests whether the removed set is really
+     drainage - never checked).
+   - Report false-negative **conditioned on valley-overlapping hand-traces** (~18% on
+     22, with small-N caveat), not the diluted 1.3%/408.
+   - Publish the **parameter-sensitivity range**, not a single 31%.
+   - HOLD the integration until this lands.
 
-- Closed: `vm9` (scaffold), `e8r` (STAC fetch), `t22` (dataset survey)
-- In progress: `lph` (Phase 3 strike/dip engine - core done; remaining =
-  correlated uncertainty `85g`, windowed fits Q5, wire to detected traces)
-- Key ready work: `c3r` (detector review - gates Phase 2), `bc1` (DEM derivative
-  review), `9vt` (training bootstrap go/no-go), `6s7` (derivative engine),
-  `gj9` (per-AOI CRS), `bcn` (cloud compositing), `1dg` (unified training gpkg),
-  `85g` (correlated uncertainty)
-- `bd ready` / `bd list --status in_progress` for the live view.
+**Then:**
+2. **`planesight-j8t`** - harden the drainage algorithm (block-mean downsample +
+   priority-flood pit-fill) BEFORE generalizing the sweep to Pakistan/Canada.
+3. **`planesight-xx2`** - integrate the filter into `ClassicalTraceDetector` as a
+   **review-flag** (route to queue, don't delete), applied **before** continuity.
+4. **`planesight-zod`** - continuity/edge-linking fix (after drainage removal).
+5. Re-run the multi-region eval with the filter; confirm the knee transfers.
 
-## Recommended next targets (in order)
+**Parallel / later:** infra remnants - `bcn` (S2 cloud compositing), `gj9` (per-AOI
+CRS policy), `1dg` (unified training GeoPackage), `85g` (correlated-error
+uncertainty). The big new phase is the **QGIS plugin integration** (GUI, QgsTask
+run, styled layers, human review/triage gate) - the path to a usable tool.
 
-1. **Phase 1 detector review (`c3r`) - START HERE.** It is the gate to Phase 2 and
-   the whole "automatic" promise. Decide the v1 classical detector implementable
-   in numpy/scipy only (Canny, ridge/valley, phase congruency via FFT, Hough),
-   run small experiments on the Nepal/Pakistan DEM + the derivative stack. Pair
-   with **`bc1`** (which derivatives best expose bedding/contacts) since they
-   inform each other.
-2. **Phase 2 classical detection MVP (`8gw`)** once `c3r` picks the method:
-   detector -> vectorise -> candidate trace polylines, behind the existing
-   `TraceDetector` ABC. Then wire detected traces into the proven plane-fit =
-   first *fully automatic* strike/dip.
-3. **Training-bootstrap go/no-go (`9vt`)** - run in parallel; it gates whether the
-   v2 ML path is viable (drape published map linework over the DEM). High-risk;
-   decide early.
-4. Science refinements when convenient: correlated-error uncertainty (`85g`),
-   windowed fits (Q5/S6.5), and quantitative validation vs Macrostrat/published
-   dips (closes Q4) - the credibility lever.
+---
 
-**Suggested immediate move:** pivot to detection - drive `c3r` + `bc1` together as
-a research spike on the data we already have.
+## Beads map
+
+- Drainage epic **`3em`** (in_progress) -> children **`5p3`** (verify, next),
+  **`j8t`** (hardening), **`xx2`** (integrate as flag), **`zod`** (continuity).
+- `lph` (Phase 3 strike/dip engine) in_progress; mostly done in core, `85g` remains.
+- Open infra: `bcn`, `gj9`, `1dg`, `85g`; deferred `luj` (shield data), `eu3`
+  (bootstrap confirmation). Phases 0/1/2 epics closed.
+
+## Working agreements / process notes
+
+- **WSL paths only** (`/mnt/c/...`). No emojis/Unicode - use `[OK]`/`[ERROR]`.
+- **Run ruff before committing.** Commit/push only when asked; **branch first**
+  (push to `main` is policy-blocked - feature branch + PR, merge with `gh`).
+- **Background runs sometimes fail transiently** (S2-fetch network blips) - re-run in
+  the foreground to confirm before assuming a code bug.
+- Visual review panels: `debug/bootstrap_review/` and `debug/drainage_test/`.
+- **Lesson this session:** trust the *measurement*, not the headline. The coverage
+  bug and the FN-dilution both produced confident-but-wrong numbers that fell apart
+  under a critical re-check. Verify before concluding; use the critical-reviewer
+  (fork) agent on big claims.

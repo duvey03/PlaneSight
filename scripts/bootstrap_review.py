@@ -215,9 +215,9 @@ def stats(region, hand, detected, valid):
           f"({n_det/max(n_hand,1):.1f}x - more is expected, you labeled a subset)")
     print("your labels with a detected edge within: "
           + "  ".join(f"{k}px {within[k]*100:.0f}%" for k in TOL_BANDS))
-    print(f"  (2px is the fair operating point: you trace ridge/contact CRESTS, while")
-    print(f"   gradient edges fire on the FLANKS ~1-2px off - a geometry offset, not")
-    print(f"   a registration error. {within[2]*100:.0f}% of your labels sit within 2px of signal.)")
+    print("  (2px is the fair operating point: you trace ridge/contact CRESTS, while")
+    print("   gradient edges fire on the FLANKS ~1-2px off - a geometry offset, not")
+    print(f"   a registration error. {within[2]*100:.0f}% of labels sit within 2px of signal.)")
     print(f"concealed (> 3px from any DEM+S2 edge): {concealed*100:.0f}% "
           f"(candidate no-signal labels - judge visually whether real or tracing slips)")
 
