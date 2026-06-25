@@ -397,6 +397,10 @@ class PlaneSightDockWidget(QgsDockWidget):
         )
         self.btn_map_select.clicked.connect(self._on_select_on_map)
         layout.addWidget(self.btn_map_select)
+        self.btn_clear = QPushButton("Clear selection")
+        self.btn_clear.setToolTip("Clear the selection on both the map and the stereonet.")
+        self.btn_clear.clicked.connect(self._on_clear_selection)
+        layout.addWidget(self.btn_clear)
         self.btn_plot = QPushButton("Refresh")
         self.btn_plot.clicked.connect(self._on_analyze_update)
         layout.addWidget(self.btn_plot)
@@ -462,3 +466,9 @@ class PlaneSightDockWidget(QgsDockWidget):
             return
         self.iface.setActiveLayer(layer)
         self.iface.actionSelectFreehand().trigger()
+
+    def _on_clear_selection(self):
+        """Clear the selection on both the map and the stereonet (one shared selection)."""
+        layer = self.cmb_att.currentLayer()
+        if layer is not None:
+            layer.removeSelection()   # fires selectionChanged -> stereonet drops highlight
