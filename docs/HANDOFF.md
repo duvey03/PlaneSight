@@ -171,24 +171,49 @@ The drainage filter was chased to its terrain boundary and the boundary is now *
 
 ---
 
-## NEXT PHASE: QGIS plugin GUI (start here)
+## NEXT PHASE: QGIS plugin GUI (start here) - PLANNED, epic `planesight-pzz`
 
-The headless core is complete and validated; the GUI turns it into a usable tool. Scope
-to design at kickoff (read `ARCHITECTURE.md` S5/S11; `planesight/` already has the Phase-0
-plugin skeleton - classFactory/metadata.txt + a QgsTask harness):
-- **Run flow:** draw/select an AOI -> a QgsTask runs the headless pipeline (fetch ->
-  derivatives -> detect -> drainage-flag -> link -> strike/dip) off the UI thread, with
-  progress + cancel.
-- **Layers:** styled outputs - detected traces (kept vs drainage-flagged), strike/dip
-  symbols (qgSurf-style markers already prototyped in `scripts/qgis_style_attitudes.py` /
-  `debug/nepal_attitudes.qml`), and the confidence-ranked review queue.
-- **The human review/triage gate** - the whole review-flag design exists for this:
-  surface drainage-flagged + low-confidence traces for accept/reject and persist the
-  decision.
-- **First checkpoint:** `scripts/qgis_console_checkpoint.py` (paste into the QGIS Python
-  console) already exists - validate the core runs inside QGIS before building UI.
-- Decisions to make: dockwidget vs processing-provider; per-AOI CRS (`gj9`); review-state
-  persistence.
+The headless core is complete and validated; the GUI turns it into a usable tool. The GUI
+plan was designed 2026-06-25 (this session) and is tracked as epic **`planesight-pzz`**.
+Read `ARCHITECTURE.md` S5/S9/S10/S11. The Phase-0 plugin skeleton already exists:
+`planesight/plugin.py` (toolbar action), `planesight/gui/main_dialog.py` (placeholder
+`QDialog` to replace), `planesight/tasks/base.py` (a working `PlaneSightTask` QgsTask
+wrapper - off-thread work, cancel, main-thread result delivery).
+
+**Reframed around FOUR standalone tools, not one monolithic pipeline** (each independently
+useful + shippable, so the plugin has value before detection is ever accurate):
+1. **Aggregate** (#1) - AOI -> styled DEM/S2/derivative layers (`core/data`, `core/derivatives`).
+2. **Measure** (#3) - strike/dip on ANY traces incl. user hand-drawn (decoupled from detection).
+3. **Analyze** (#4) - stereonet + Fisher mean + **fold axis** (girdle eigen-analysis); map<->net
+   selection linkage. Stereonet MATH in `core/` (dep-free, tested); rendering decision deferred.
+4. **Detect** (#2) - detector -> drainage-flag -> link -> confidence-ranked review/triage gate.
+   Its advanced form is **example-driven** ("trace a few, find the rest" = the active-learning
+   loop, S8.3), gated by a research PROBE first (`planesight-ayn`).
+
+**Locked design decisions (2026-06-25):** dockwidget shell (NOT processing-provider for v1);
+thin-vertical-slice first; guided-only (one-click later); ranked triage panel (S9.1 - the
+differentiator). PyQGIS/Qt confined to `gui/` + `plugin.py`; **core stays dependency-free**.
+Per-AOI UTM CRS from AOI centroid (`gj9`); re-detect default = preserve/merge edits (Q8).
+
+**Milestones (dependency-ordered: Aggregate -> Measure -> Analyze -> Detect -> example-driven):**
+- **M0** `4vw` - in-QGIS pipeline checkpoint (extend `scripts/qgis_console_checkpoint.py` to
+  run the full pipeline in the QGIS console; de-risk GDAL/CRS/env). **READY - the entry point.**
+- **M1** `vye` - data aggregator slice (the thin slice; `PlaneSightDockWidget`, AOI map-extent
+  + draw-rectangle, Run in `PlaneSightTask`, styled layers).
+- **M2** `o9m` - strike/dip on supplied traces (styled attitudes; reuse
+  `scripts/qgis_style_attitudes.py` / `debug/nepal_attitudes.qml`).
+- **M3** `8et` - structural analysis (stereonet/mean/fold-axis).
+- **M4** `oey` - detection + review/triage gate.
+- **PROBE** `ayn` - example-driven generalization research gate (ready anytime; gates M5).
+- **M5** `xyy` - example-driven detection. **M6** `2pv` - persistence + export + project-state.
+
+**Parallelization plan (two-track, NOT a 5-lane fan-out):** UI work loses the headless+CI
+verification backbone that made the science lanes safe (no QGIS in CI; validation is serial +
+manual; the dockwidget shell is a shared file). So: **Track 1 (serial spine)** M0 -> M1 ->
+panels, human-validated in QGIS; **Track 2 (parallel headless lane)** the **stereonet math**
+(M3's `core/structural/`) pulled forward - pure numpy, fully test-gated, zero UI dependency,
+retires M3's risk early (same move as pulling `plane_fit`/`lph` forward). The example-driven
+PROBE is a good optional 2nd headless lane (lower urgency).
 
 ## Beads map
 
