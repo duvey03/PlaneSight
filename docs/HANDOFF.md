@@ -196,16 +196,32 @@ differentiator). PyQGIS/Qt confined to `gui/` + `plugin.py`; **core stays depend
 Per-AOI UTM CRS from AOI centroid (`gj9`); re-detect default = preserve/merge edits (Q8).
 
 **Milestones (dependency-ordered: Aggregate -> Measure -> Analyze -> Detect -> example-driven):**
-- **M0** `4vw` - in-QGIS pipeline checkpoint (extend `scripts/qgis_console_checkpoint.py` to
-  run the full pipeline in the QGIS console; de-risk GDAL/CRS/env). **READY - the entry point.**
-- **M1** `vye` - data aggregator slice (the thin slice; `PlaneSightDockWidget`, AOI map-extent
-  + draw-rectangle, Run in `PlaneSightTask`, styled layers).
-- **M2** `o9m` - strike/dip on supplied traces (styled attitudes; reuse
-  `scripts/qgis_style_attitudes.py` / `debug/nepal_attitudes.qml`).
-- **M3** `8et` - structural analysis (stereonet/mean/fold-axis).
-- **M4** `oey` - detection + review/triage gate.
+- **M0** `4vw` - in-QGIS pipeline checkpoint. **DONE** (PR #8). `scripts/qgis_console_checkpoint.py`
+  runs the full pipeline in QGIS; orchestration extracted to `core/pipeline.py`.
+- **M1** `vye` - data aggregator slice. **DONE** (PR #8). `PlaneSightDockWidget` Data tab: AOI ->
+  fetch DEM/S2/derivatives -> styled layers grouped (at the BOTTOM of the tree) by AOI.
+- **M2** `o9m` - strike/dip on supplied traces. **DONE** (commit 921c274; PR pending). Strike/Dip
+  tab: any trace layer + DEM -> `fit_traces` -> qgSurf SVG attitude markers. Decoupled from
+  detection. `core.pipeline` made scipy-free (lazy detection imports) - this fixed a UI freeze.
+- **M3** `8et`(math done, PR #7) - structural analysis panel. **NEXT** - wire a new "Analyze" tab
+  to the merged `core/structural/stereonet.py`: plot selected attitudes -> Fisher mean + fold
+  axis -> map<->stereonet selection linkage. Rendering decision (matplotlib vs QPainter) here.
+- **M4** `oey` - detection + review/triage gate (first scipy user; lazy + off-thread).
 - **PROBE** `ayn` - example-driven generalization research gate (ready anytime; gates M5).
 - **M5** `xyy` - example-driven detection. **M6** `2pv` - persistence + export + project-state.
+
+**GUI dev environment (established this session - IMPORTANT for resuming):**
+- **Target QGIS = 3.44.11 LTR** (was 3.28). Plugin `metadata.txt` still says min 3.22 - reconcile
+  vs the 3.44-only `Qgis.LabelPlacement.OverPoint` enum in `styling.py` (`planesight-qwe`).
+- **Headless QGIS test rig:** micromamba env `qgis` (`qgis=3.44` + `scipy`); run offscreen with
+  `QT_QPA_PLATFORM=offscreen MAMBA_ROOT_PREFIX=$HOME/micromamba PYTHONPATH=/mnt/c/PlaneSight
+  $HOME/bin/micromamba run -n qgis python debug/headless_*.py`. Renders symbology/dock/tasks
+  offscreen - caught the 3.44 enum + the scipy freeze WITHOUT crashing the desktop. Use it to
+  verify every GUI change before deploying.
+- **Deploy/run:** copy `planesight/` into the QGIS profile's `python/plugins/` (no hot-reload -
+  restart QGIS or use the `debug/*_probe.py` reload-probes). The user's legacy `default` profile
+  (60+ old plugins) hangs 3.44 -> dev uses a clean **`ps44`** profile:
+  `"C:\Program Files\QGIS 3.44.11\bin\qgis-ltr.bat" --profile ps44`.
 
 **Parallelization plan (two-track, NOT a 5-lane fan-out):** UI work loses the headless+CI
 verification backbone that made the science lanes safe (no QGIS in CI; validation is serial +
