@@ -80,19 +80,41 @@ def _fit_core(pts):
     return dip, dip_direction, strike, normal, s**2, q
 
 
-def _estimate_uncertainty(pts, sigma_z, n_mc, seed):
+def _estimate_uncertainty(pts, sigma_z, n_mc, seed, correlation_length):
     """1-sigma dip and dip-direction uncertainty via Monte-Carlo z-perturbation.
 
-    NOTE: assumes *independent* per-point vertical noise, so for well-sampled,
-    high-relief traces it is an optimistic LOWER BOUND - real DEM error is
-    spatially correlated (it does not average down by sqrt(N)). It does, however,
-    correctly blow up for low-relief / poorly-conditioned traces. A correlated-
-    error (random-tilt) term is a planned refinement.
+    Two error components are superimposed per MC iteration:
+
+    1. **Independent** per-point vertical noise (std ``sigma_z``). On its own this
+       is an optimistic LOWER BOUND for a well-sampled, high-relief trace: it
+       averages down ~1/sqrt(N), reporting implausibly tiny uncertainties for long
+       traces, because real DEM error is *not* per-point independent.
+    2. **Correlated** error, modelled as a random planar tilt (planesight-85g):
+       each iteration draws an isotropic horizontal gradient whose two components
+       are ~ N(0, ``sigma_z / correlation_length``) and adds ``grad . (x, y)`` to
+       every sample. A single coherent tilt rotates the whole point cloud - hence
+       the best-fit plane - by ~``atan(|grad|)``, an effect that depends on neither
+       the sample count N nor the trace extent. This puts a FLOOR on the budget
+       that does not average away, so long well-sampled traces no longer report
+       sub-0.1 deg uncertainties. ``correlation_length`` is the distance (metres)
+       over which the correlated vertical error accumulates to ~``sigma_z``; pass
+       ``None``/<=0 to recover the legacy independent-only behaviour exactly.
+
+    Either component still correctly blows up for low-relief / poorly-conditioned
+    traces, since the SVD stays near-degenerate regardless of the perturbation.
     """
     rng = np.random.default_rng(seed)
     n = pts.shape[0]
     samples = np.broadcast_to(pts, (n_mc, n, 3)).copy()
     samples[:, :, 2] += rng.normal(0.0, sigma_z, size=(n_mc, n))
+    if correlation_length is not None and correlation_length > 0.0:
+        # correlated random-tilt term: an isotropic horizontal gradient per
+        # iteration (slope 1-sigma = sigma_z / correlation_length), applied as a
+        # coherent planar tilt across ALL points so it cannot average down with N.
+        xy = pts[:, :2] - pts[:, :2].mean(axis=0)  # centre so tilt is a pure rotation
+        slope_std = sigma_z / correlation_length
+        grad = rng.normal(0.0, slope_std, size=(n_mc, 2))  # (n_mc, 2) gradient vectors
+        samples[:, :, 2] += grad @ xy.T  # (n_mc, n) coherent tilt per iteration
     centred = samples - samples.mean(axis=1, keepdims=True)
     _, _, vt = np.linalg.svd(centred, full_matrices=False)  # batched SVD
     normals = vt[:, 2, :]
@@ -107,7 +129,7 @@ def _estimate_uncertainty(pts, sigma_z, n_mc, seed):
     return float(np.std(dips)), float(dd_unc)
 
 
-def fit_plane(points, sigma_z=None, n_mc=200, seed=0) -> Attitude:
+def fit_plane(points, sigma_z=None, n_mc=200, seed=0, correlation_length=500.0) -> Attitude:
     """Fit a best-fit plane to 3D points and return the recovered Attitude.
 
     Args:
@@ -115,11 +137,24 @@ def fit_plane(points, sigma_z=None, n_mc=200, seed=0) -> Attitude:
             least 3 points.
         sigma_z: optional DEM vertical 1-sigma error (metres). When given,
             dip/dip-direction uncertainty is estimated by Monte-Carlo
-            perturbation (ARCHITECTURE.md S6.4). This assumes independent
-            per-point noise and is an optimistic lower bound (see
-            ``_estimate_uncertainty``).
+            perturbation (ARCHITECTURE.md S6.4), combining an independent
+            per-point term with a correlated random-tilt term (see
+            ``_estimate_uncertainty`` and ``correlation_length``).
         n_mc: Monte-Carlo iterations for the uncertainty estimate.
         seed: RNG seed, for reproducible uncertainty.
+        correlation_length: spatial correlation length (metres) of the DEM
+            vertical error, driving the correlated random-tilt term that keeps the
+            uncertainty budget from averaging down ~1/sqrt(N) on long, dense
+            traces (planesight-85g). The default of 500 m is a mid-range estimate
+            for Copernicus GLO-30 (a TanDEM-X product whose error is dominated by
+            long-wavelength correlated structure at scales of a few hundred metres
+            to ~1 km); it makes the correlated tilt 1-sigma slope sigma_z / 500,
+            i.e. ~0.23 deg for sigma_z = 2 m - the order of GLO-30's real floor,
+            not the sub-0.1 deg an independent-noise model claims for a dense
+            trace. Pass ``None`` or a value <= 0 to disable the correlated term
+            and recover the legacy independent-only budget exactly. Horizontal
+            misregistration is a second correlated source not yet modelled (it
+            would add a similar non-vanishing floor); see the bead.
 
     Raises:
         ValueError: if fewer than 3 points or the wrong shape is given.
@@ -148,7 +183,9 @@ def fit_plane(points, sigma_z=None, n_mc=200, seed=0) -> Attitude:
 
     dip_unc = dd_unc = float("nan")
     if sigma_z is not None and sigma_z > 0.0:
-        dip_unc, dd_unc = _estimate_uncertainty(pts, sigma_z, n_mc, seed)
+        dip_unc, dd_unc = _estimate_uncertainty(
+            pts, sigma_z, n_mc, seed, correlation_length
+        )
 
     return Attitude(
         strike=strike,

@@ -198,3 +198,76 @@ def test_uncertainty_is_reproducible_with_seed():
     b = fit_plane(pts, sigma_z=2.0, seed=7)
     assert a.dip_uncertainty == b.dip_uncertainty
     assert a.dip_direction_uncertainty == b.dip_direction_uncertainty
+
+
+# --- correlated-error (random-tilt) term (S6.4 / planesight-85g) -------------
+
+def test_independent_only_matches_legacy_and_averages_down():
+    # Backward compatibility: disabling the correlated term (correlation_length
+    # None / <= 0) must reproduce the legacy independent-only budget bit-for-bit,
+    # and that budget must average DOWN ~1/sqrt(N) (the very optimism we fix).
+    pts = sinuous_trace(35.0, 120.0, n=60)
+    legacy = fit_plane(pts, sigma_z=2.0, correlation_length=None)
+    also_off = fit_plane(pts, sigma_z=2.0, correlation_length=0.0)
+    assert also_off.dip_uncertainty == legacy.dip_uncertainty
+    assert also_off.dip_direction_uncertainty == legacy.dip_direction_uncertainty
+
+    ns = [40, 160, 640]
+    indep = [
+        fit_plane(
+            sinuous_trace(35.0, 120.0, n=k), sigma_z=2.0, n_mc=300,
+            correlation_length=None,
+        ).dip_direction_uncertainty
+        for k in ns
+    ]
+    # densifying the trace keeps shrinking the independent-only estimate
+    assert indep[-1] < 0.5 * indep[0]
+
+
+def test_correlated_term_puts_a_floor_that_does_not_average_down():
+    # The fix (both directions): with the correlated random-tilt term ON, a long,
+    # densely sampled trace's uncertainty stays materially higher and does NOT
+    # keep shrinking ~1/sqrt(N), whereas the independent-only path still does.
+    ns = [40, 160, 640]
+    indep = [
+        fit_plane(
+            sinuous_trace(35.0, 120.0, n=k), sigma_z=2.0, n_mc=300,
+            correlation_length=None,
+        ).dip_direction_uncertainty
+        for k in ns
+    ]
+    corr = [
+        fit_plane(
+            sinuous_trace(35.0, 120.0, n=k), sigma_z=2.0, n_mc=300,
+            correlation_length=500.0,
+        ).dip_direction_uncertainty
+        for k in ns
+    ]
+    # independent collapses; correlated holds a floor (does not keep shrinking)
+    assert indep[-1] < 0.5 * indep[0]
+    assert corr[-1] > 0.7 * corr[0]
+    # at high N the correlated budget is materially (here >3x) larger - the floor
+    # the independent model never sees
+    assert corr[-1] > 3.0 * indep[-1]
+
+
+def test_correlated_term_on_by_default():
+    # The default fit_plane budget includes the correlated floor, so it exceeds
+    # the explicitly independent-only budget on a long dense trace.
+    pts = sinuous_trace(35.0, 120.0, n=400)
+    default = fit_plane(pts, sigma_z=2.0)
+    indep = fit_plane(pts, sigma_z=2.0, correlation_length=None)
+    assert default.dip_direction_uncertainty > 2.0 * indep.dip_direction_uncertainty
+
+
+def test_correlated_term_still_finite_grows_and_degenerate_blows_up():
+    # The correlated term must not break the existing budget invariants.
+    lo = fit_plane(sinuous_trace(35.0, 120.0, n=60), sigma_z=0.5)
+    hi = fit_plane(sinuous_trace(35.0, 120.0, n=60), sigma_z=4.0)
+    assert math.isfinite(lo.dip_uncertainty) and lo.dip_uncertainty > 0
+    assert hi.dip_uncertainty > lo.dip_uncertainty  # slope_std scales with sigma_z too
+    # degenerate trace still gets a huge dip-direction error bar
+    good = fit_plane(sinuous_trace(40.0, 100.0, n=60), sigma_z=2.0)
+    straight = fit_plane(straight_trace(40.0, 100.0, axis="dip"), sigma_z=2.0)
+    assert straight.dip_direction_uncertainty > 20.0
+    assert straight.dip_direction_uncertainty > good.dip_direction_uncertainty
