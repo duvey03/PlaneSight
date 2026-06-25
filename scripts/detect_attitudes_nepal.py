@@ -26,6 +26,8 @@ from planesight.core.attitude import fit_plane, sample_trace
 from planesight.core.data import fetch_dem
 from planesight.core.derivatives import build_terrain_stack
 from planesight.core.detect import ClassicalTraceDetector
+from planesight.core.detect.drainage import flag_drainage
+from planesight.core.detect.vectorize import link_polylines, pixels_to_world
 
 gdal.UseExceptions()
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -50,6 +52,10 @@ COND_RELIABLE = 1e-2
 # consistently across Nepal/Pakistan/Canada (the artifacts cluster below 1e-4).
 MAP_COND_RELIABLE = 1e-3
 MIN_TRACE_PTS = 8      # min sampled points for a meaningful fit
+# Drainage review-flag (planesight-61f): OVERLAP-based flag (sinuosity-robust),
+# retained not deleted. Filled flow net + accum 15 (planesight-j8t); flag at >=50%
+# channel-buffer overlap. Flagged traces go to a rank-ordered review queue.
+DRAIN_DS, DRAIN_ACCUM, DRAIN_OVERLAP = 3, 15, 0.5
 
 
 def main():
@@ -74,14 +80,30 @@ def main():
     stack = np.stack([terr[b] for b in BANDS])
 
     log.info("Detecting traces (Canny on %s)...", "+".join(BANDS))
+    # detect in PIXEL (col,row) space so the drainage classifier can index the grid;
+    # kept traces are converted to world coords for sampling below.
     traces = ClassicalTraceDetector(min_length=MIN_TRACE_PTS, simplify_tol=1.0).detect(
-        stack, transform=gt)
+        stack)
     log.info("Auto-detected %d candidate traces", len(traces))
 
-    # fit strike/dip along each detected trace
+    # drainage review-flag (61f): OVERLAP-based flag, retained not deleted. Flagged
+    # traces are excluded from the attitude stats and routed to a confidence-ranked
+    # review queue (rank = length * (1 - monotonicity): long cross-cutters rescue first).
+    flags = flag_drainage(traces, dem, downsample=DRAIN_DS, min_accum_cells=DRAIN_ACCUM,
+                          min_overlap_fraction=DRAIN_OVERLAP, valid_mask=np.isfinite(dem))
+    kept = [t for t, f in zip(traces, flags) if not f.is_drainage]
+    flagged = [(t, f) for t, f in zip(traces, flags) if f.is_drainage]
+    # continuity (61f contract): link fragments AFTER drainage removal - linking before
+    # would reconnect creeks. Bridged traces feed the fit (and survive size gates).
+    linked = link_polylines(kept)
+    log.info("Drainage: %d detected -> %d flagged / %d kept -> %d after linking",
+             len(traces), len(flagged), len(kept), len(linked))
+
+    # fit strike/dip along each linked KEPT trace (pixel (col,row) -> world for sampling)
     atts, reliable = [], []
-    for tr in traces:
-        pts = sample_trace(tr, dem, gt, spacing=RES, nodata=None)
+    for tr_px in linked:
+        world = pixels_to_world(tr_px[:, ::-1], gt)
+        pts = sample_trace(world, dem, gt, spacing=RES, nodata=None)
         if len(pts) < MIN_TRACE_PTS:
             continue
         att = fit_plane(pts, sigma_z=SIGMA_Z)
@@ -98,6 +120,8 @@ def main():
         strikes = np.array([a.strike % 180 for a in reliable])
         print("\n=== Automatic strike/dip on Nepal (reliable fits) ===")
         print(f"traces detected : {len(traces)}")
+        print(f"drainage-flagged: {len(flagged)} (overlap-based, retained for review)")
+        print(f"kept -> linked  : {len(kept)} -> {len(linked)} (continuity)")
         print(f"reliable fits   : {len(reliable)}")
         print(f"dip    median {np.median(dips):.1f}  IQR [{np.percentile(dips,25):.1f}, "
               f"{np.percentile(dips,75):.1f}]  range [{dips.min():.1f}, {dips.max():.1f}]")
@@ -120,6 +144,21 @@ def main():
         print(f"\nWrote {csv_path}")
     else:
         log.warning("No reliable attitudes - check detection/conditioning gate.")
+
+    # drainage review queue: flagged traces ranked for RESCUE - highest rank (long +
+    # cross-cutting, low monotonicity) first, so a genuine contact surfaces at the top
+    # for the human to recover. The future GUI review gate consumes this.
+    if flagged:
+        rq_path = os.path.join(OUT_DIR, "nepal_drainage_review_queue.csv")
+        with open(rq_path, "w", newline="") as fh:
+            wr = csv.writer(fh)
+            wr.writerow(["rank", "review_score", "overlap", "monotonicity",
+                         "length_px", "n_vertices"])
+            for i, (tr_px, f) in enumerate(
+                    sorted(flagged, key=lambda x: -x[1].rank), 1):
+                wr.writerow([i, f"{f.rank:.1f}", f"{f.overlap:.2f}",
+                             f"{f.monotonicity:.2f}", f"{f.length:.1f}", len(tr_px)])
+        print(f"Wrote {rq_path} ({len(flagged)} flagged, ranked by rescue score)")
 
 
 if __name__ == "__main__":
