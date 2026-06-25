@@ -44,6 +44,7 @@ from qgis.PyQt.QtWidgets import (
 
 from ..tasks.aggregate import AggregateTask
 from ..tasks.attitudes import AttitudeTask
+from .stereonet_widget import StereonetWidget
 from .styling import style_attitudes
 
 WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
@@ -71,14 +72,20 @@ class PlaneSightDockWidget(QgsDockWidget):
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_data_tab(), "Data")
         self._tabs.addTab(self._build_attitude_tab(), "Strike/Dip")
+        self._tabs.addTab(self._build_analyze_tab(), "Analyze")
         self._tabs.currentChanged.connect(self._on_tab_changed)
         self.setWidget(self._tabs)
         self.canvas.extentsChanged.connect(self._refresh_bbox)
         self._refresh_bbox()
 
     def _on_tab_changed(self, index):
-        if self._tabs.tabText(index) == "Strike/Dip":
+        name = self._tabs.tabText(index)
+        if name == "Strike/Dip":
             self._apply_default_selections()
+        elif name == "Analyze":
+            self._default_attitude_layer()
+            # ensure selectionChanged is wired even if the combo didn't change
+            self._on_analyze_layer_changed(self.cmb_att.currentLayer())
 
     def _apply_default_selections(self):
         """Point the Strike/Dip combos at sensible layers (PlaneSight DEM + user traces)."""
@@ -96,6 +103,14 @@ class PlaneSightDockWidget(QgsDockWidget):
                         and QgsWkbTypes.geometryType(lyr.wkbType()) == QgsWkbTypes.LineGeometry
                         and not lyr.name().startswith("PlaneSight")):
                     self.cmb_traces.setLayer(lyr)
+                    break
+
+    def _default_attitude_layer(self):
+        cur = self.cmb_att.currentLayer()
+        if cur is None or not cur.name().startswith("PlaneSight attitudes"):
+            for lyr in QgsProject.instance().mapLayers().values():
+                if lyr.type() == lyr.VectorLayer and lyr.name().startswith("PlaneSight attitudes"):
+                    self.cmb_att.setLayer(lyr)
                     break
 
     def _build_data_tab(self):
@@ -365,3 +380,85 @@ class PlaneSightDockWidget(QgsDockWidget):
         self.att_progress.hide()
         self.btn_fit.setEnabled(True)
         self._att_task = None
+
+    # ------------------------------------------------------- analyze (M3)
+    def _build_analyze_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.addWidget(QLabel("Attitude layer (points):"))
+        self.cmb_att = QgsMapLayerComboBox()
+        self.cmb_att.setFilters(QgsMapLayerProxyModel.PointLayer)
+        self.cmb_att.layerChanged.connect(self._on_analyze_layer_changed)
+        layout.addWidget(self.cmb_att)
+        self.btn_map_select = QPushButton("Select attitudes on map")
+        self.btn_map_select.setToolTip(
+            "Activate the attitude layer + QGIS freehand select; drag on the map to "
+            "select attitudes (they highlight on the stereonet)."
+        )
+        self.btn_map_select.clicked.connect(self._on_select_on_map)
+        layout.addWidget(self.btn_map_select)
+        self.btn_plot = QPushButton("Refresh")
+        self.btn_plot.clicked.connect(self._on_analyze_update)
+        layout.addWidget(self.btn_plot)
+        self.stereonet = StereonetWidget()
+        self.stereonet.lassoed.connect(self._on_net_lassoed)
+        layout.addWidget(self.stereonet, 1)
+        self.lbl_stats = QLabel("Lasso poles to select traces; map selection highlights here.")
+        self.lbl_stats.setWordWrap(True)
+        layout.addWidget(self.lbl_stats)
+        self._att_layer = None      # the layer whose selectionChanged we're listening to
+        return tab
+
+    def _on_analyze_layer_changed(self, layer):
+        if self._att_layer is not None:
+            try:
+                self._att_layer.selectionChanged.disconnect(self._on_map_selection_changed)
+            except (TypeError, RuntimeError):
+                pass
+        self._att_layer = layer
+        if layer is not None:
+            layer.selectionChanged.connect(self._on_map_selection_changed)
+        self._on_analyze_update()
+
+    def _on_analyze_update(self):
+        layer = self.cmb_att.currentLayer()
+        if layer is None:
+            self.stereonet.set_attitudes([], [], [])
+            self.lbl_stats.setText("Pick an attitude point layer.")
+            return
+        names = {f.name() for f in layer.fields()}
+        if "strike" not in names or "dip" not in names:
+            self.stereonet.set_attitudes([], [], [])
+            self.lbl_stats.setText(
+                "Layer has no 'strike'/'dip' fields - pick a PlaneSight attitudes layer."
+            )
+            return
+        strikes, dips, ids = [], [], []
+        for feat in layer.getFeatures():
+            s, d = feat["strike"], feat["dip"]
+            if s is not None and d is not None:
+                strikes.append(float(s))
+                dips.append(float(d))
+                ids.append(feat.id())
+        self.stereonet.set_attitudes(strikes, dips, ids)
+        self.stereonet.set_selected_ids(layer.selectedFeatureIds())
+        self.lbl_stats.setText(self.stereonet.stats_text())
+
+    def _on_map_selection_changed(self, *args):
+        layer = self.cmb_att.currentLayer()
+        if layer is not None:
+            self.stereonet.set_selected_ids(layer.selectedFeatureIds())
+            self.lbl_stats.setText(self.stereonet.stats_text())
+
+    def _on_net_lassoed(self, ids):
+        layer = self.cmb_att.currentLayer()
+        if layer is not None:
+            layer.selectByIds(list(ids))   # drives the map highlight + re-syncs the net
+
+    def _on_select_on_map(self):
+        """Arm QGIS's native freehand-select on the attitude layer (mirrors the net lasso)."""
+        layer = self.cmb_att.currentLayer()
+        if layer is None:
+            return
+        self.iface.setActiveLayer(layer)
+        self.iface.actionSelectFreehand().trigger()
