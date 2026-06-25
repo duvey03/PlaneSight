@@ -1,28 +1,32 @@
 # PlaneSight - Session Handoff
 
-**Updated:** 2026-06-24. Supersedes the Phase-0 handoff.
+**Updated:** 2026-06-24.
 
 PlaneSight = a QGIS plugin that, for any AOI, aggregates global DEM (Copernicus
 GLO-30) + Sentinel-2, auto-detects geological bedding/contact traces, and computes
 strike/dip en masse from the DEM geometry. Everything to date is a validated,
 **headless** Python core (`planesight/core/`) - the QGIS GUI is not yet built. Read
-`ARCHITECTURE.md` for design/decisions (D1-D15) and `docs/PHASE1_REPORT.md` +
-`docs/BOOTSTRAP_VERDICT.md` for the science.
+`ARCHITECTURE.md` for design/decisions (D1-D15), `docs/PHASE1_REPORT.md` +
+`docs/BOOTSTRAP_VERDICT.md` for the early science, and `docs/ATTITUDE_RULES.md` for the
+data-driven thresholds.
 
 ---
 
 ## TL;DR state
 
-- **Phases 0-2 are DONE and on `main`** (PRs #1, #2 merged): data fetch, derivative
-  engine, plane-fit strike/dip engine, classical trace detector, scoring.
-- **The full chain works end to end on real data**: raw AOI -> GLO-30 -> auto
-  traces -> strike/dip that recovers the known regional structural grain in three
-  regions (Nepal/Pakistan/Canada).
-- **Current WIP (branch `feat/drainage-filter`, NOT merged):** a flow-accumulation
-  drainage pre-filter. Built + unit-tested, but a critical review found the Nepal
-  results **oversold** - verification is required before it's trustworthy (below).
-- **Pending the user (just approved):** build the drainage verification (audit panel
-  + honest metrics) before integrating the filter.
+- **Phases 0-2 are on `main`** (PRs #1, #2): data fetch, derivative engine, plane-fit
+  strike/dip, classical detector, scoring.
+- **The integration branch `feat/drainage-filter`** (this body of work, **ready to PR
+  to main**) adds, on top of that:
+  1. the **complete drainage arc** - flow-accumulation filter, verified + hardened +
+     integrated as a review-flag, then refined to an overlap-flag + confidence-ranked
+     review queue (`3em` epic CLOSED);
+  2. **three parallel-lane improvements** - data-driven attitude rules (`5ug`),
+     continuity/edge-linking (`zod`), a correlated-error uncertainty floor (`85g`);
+  3. **process tooling** - verification hooks, a parallelization kit, and an
+     adversarial skeptic verifier.
+- **195 pure tests green; ruff clean.** Headless GDAL via micromamba env `gdal`:
+  `MAMBA_ROOT_PREFIX=$HOME/micromamba PYTHONPATH=$PWD $HOME/bin/micromamba run -n gdal python ...`
 
 ---
 
@@ -30,163 +34,103 @@ strike/dip en masse from the DEM geometry. Everything to date is a validated,
 
 | Capability | Where | Status |
 |---|---|---|
-| AOI -> STAC -> GLO-30 DEM + Sentinel-2 (anonymous AWS) | `core/data/` | done |
-| Coverage-aware S2 same-date mosaic + nodata handling | `core/data/align.py`, harness | done |
-| Derivative engine (slope/aspect/hillshade/tpi/curvature; S2 indices; named stacks) | `core/derivatives/` | done |
-| Plane-fit strike/dip (SVD) + conditioning/planarity + **map_conditioning** + MC uncertainty | `core/attitude/plane_fit.py` | done |
-| Positive-unlabeled scoring (recall-at-budget) + label-free linearity | `core/detect/score.py`, `linearity.py` | done |
-| Canny operator + vectorize (thin/trace/simplify) + `ClassicalTraceDetector` | `core/detect/` | done |
-| End-to-end auto strike/dip on Nepal | `scripts/detect_attitudes_nepal.py` | done |
-| Data-driven attitude rules (local variability + morphology/length priors) | `core/attitude/variability.py`, `scripts/attitude_rules.py`, `docs/ATTITUDE_RULES.md` | done (`5ug`) |
-| Multi-region detector eval (recall/linearity + dominant strikes) | `scripts/detector_eval.py` | done |
-| Drainage pre-filter (D8 flow accum + classifier) | `core/detect/drainage.py` | **WIP, see issues** |
-
-**~158 pure tests green; ruff clean.** Headless GDAL via micromamba env `gdal`:
-`MAMBA_ROOT_PREFIX=$HOME/micromamba PYTHONPATH=$PWD $HOME/bin/micromamba run -n gdal python ...`
-
-## Key findings (the science)
-
-- **DEM curvature/slope are the dominant contact exposers** across all 3 regions;
-  Sentinel-2 (iron-oxide) is a useful secondary, seasonally sensitive.
-- **Auto strike/dip works:** Nepal gave 3,324 well-conditioned attitudes (median dip
-  ~20 deg, dominant strike ~86 deg = Himalayan grain) with no digitizing. Dominant
-  strikes match known grain in all 3 regions (Himalaya/Makran E-W, Cordillera NW-SE).
-- **`map_conditioning` gate** (lambda2/lambda1 of the x,y projection) removes the
-  straight-map-trace near-vertical artifact the 3D conditioning misses (gate 1e-3:
-  near-vertical 29%->~0%, keeps 95-98% of fits).
-- **ML bootstrap (planesight-9vt): conditional no-go, then softened** - map-draping
-  for ML labels is terrain-dependent, not a flat no-go (`docs/BOOTSTRAP_VERDICT.md`).
+| AOI -> STAC -> GLO-30 DEM + Sentinel-2 (anonymous AWS) | `core/data/` | on main |
+| Derivative engine (slope/aspect/hillshade/tpi/curvature; S2 indices; named stacks) | `core/derivatives/` | on main |
+| Plane-fit strike/dip (SVD) + conditioning/planarity/**map_conditioning** + MC uncertainty | `core/attitude/plane_fit.py` | on main |
+| Positive-unlabeled scoring (recall-at-budget) + label-free linearity | `core/detect/score.py`, `linearity.py` | on main |
+| Canny + vectorize (thin/trace/simplify) + `ClassicalTraceDetector` | `core/detect/` | on main |
+| **Drainage filter** (D8 flow accum, depression-filled, overlap-flag + rank) | `core/detect/drainage.py` | **done (`3em`)** |
+| **Continuity linking** (`link_polylines`, 3-condition guard) | `core/detect/vectorize.py` | done (`zod`) |
+| **Correlated-error uncertainty floor** (`correlation_length`) | `core/attitude/plane_fit.py` | done (`85g`) |
+| **Data-driven attitude rules** (local variability, morphology/length priors) | `core/attitude/variability.py`, `docs/ATTITUDE_RULES.md` | done (`5ug`) |
+| End-to-end auto strike/dip on Nepal (drainage-flag + link + ranked queue) | `scripts/detect_attitudes_nepal.py` | done (`61f`) |
 
 ---
 
-## Issues / open problems identified
+## The drainage arc (the main story this cycle)
 
-1. **Drainage dominates the false lineaments (geologist-confirmed, quantified).** The
-   detector is a generic topographic break-line detector; in dissected terrain it
-   traces creeks/rivers. Probe: detected edges ~70x more valley-concave than
-   background, 96% within 2px of a valley axis. **Curvature-SIGN filtering is a dead
-   end** (47% vs 47%); drainage is a connectivity property needing flow accumulation.
-2. **Drainage filter VERIFIED (planesight-5p3 closed) - headline corrected, filter sound.**
-   - **Audit (decisive):** 30 RANDOM flagged traces rendered over hillshade + S2; the
-     geologist judged **all 30 to be genuine creeks**. The removed set is clean - the
-     filter does not eat contacts when it flags. (`scripts/drainage_verify.py`.)
-   - **Conditioned false-negative:** of the 24 hand-traces that actually run along
-     valleys (>=50% on the channel buffer), **6 get flagged = 25%** (small N, treat as
-     indicative). The old "1.3%/408" was dilution across cross-cutting traces.
-   - **Parameter sensitivity** (removed % of length / conditioned-FN %): 19-41% / 0-79%
-     across angle_tol 20-45 x min_aligned 0.4-0.6. Safe corner 0.6/25 ~22%/0%.
-   - **Decision:** keep the aggressive **0.5 / 30** default (31% removed). Since the
-     filter ships as a **review-flag, not a delete** (`xx2`), a wrongly-flagged contact
-     is recoverable in review, but an UN-flagged creek silently pollutes the kept
-     geology + strike/dip - the asymmetry favors flagging aggressively.
-3. **Drainage algorithm shortcuts - FIXED (planesight-j8t closed, commit a701bef).**
-   `drainage.py` now depression-fills (priority-flood + epsilon, `fill_depressions`)
-   and block-mean downsamples (`block_mean`) via the `flow_network` pipeline, so
-   channels stay continuous and narrow channels survive downsampling - the regime
-   that would have degraded on low-relief Pakistan/Canada. Filling raised
-   accumulation, so `DRAIN_ACCUM` was recalibrated 8->15 (network 22%->15% of map,
-   same ~31% removal the geologist audited). Still UNTESTED on Pakistan/Canada - run
-   the sweep there next to confirm the knee transfers.
-4. **Detections are fragmented vs the geologist's continuous interpretation**
-   (hysteresis breaks; `trace_skeleton` splits at junctions; no gap-bridging).
-5. **Conditioning gate calibrated only on auto-detected Nepal traces** (`2je`); the
-   1e-2/1e-3 thresholds may need per-region tuning.
-6. **Everything is headless** - no QGIS plugin GUI/review-gate yet.
+The detector is a generic topographic break-line detector, so in dissected terrain it
+traces **creeks**, not just contacts. The fix and its validation:
 
----
+1. **Flow-accumulation filter** (`drainage.py`): D8 `flow_directions/accumulation/
+   azimuth`, **`fill_depressions`** (priority-flood + epsilon) and **`block_mean`**
+   downsample via **`flow_network`** (`j8t` hardening - keeps channels continuous on
+   low relief), `channel_network`, `channel_proximity`.
+2. **Verified (`5p3`):** geologist audited 30 random flagged traces -> all creeks
+   (removed set clean). Conditioned false-negative 25% (6/24 valley-overlapping hand
+   traces, small N) - the old "1.3%/408" was denominator dilution.
+3. **Integrated as a review-FLAG, not a delete (`xx2`):** flagged traces are retained,
+   excluded from the attitude stats, and routed to a review queue. Strike-valley
+   contacts (rare, recoverable) are the accepted false-negative cost.
+4. **Recall-gap investigation (`4l8`):** the geologist still saw creeks in the kept set.
+   Measured: ~848 on-channel traces (10.6% length) that flow-**alignment** missed
+   because meander sinuosity drops the alignment score. Discriminator test:
+   **convexity FAILS** even as a per-trace aggregate (confirms the old curvature-sign
+   dead-end); **elevation monotonicity** (creek descends a thalweg; a contact-V crosses
+   it) is the right, sinuosity-robust signal. Geologist verdict: the on-channel band is
+   a **confidence** problem - flag it aggressively, rescue only the big cross-cutters.
+5. **Refined rule (`61f`):** `flag_drainage` now flags on **overlap** (sinuosity-robust)
+   and returns `DrainageFlag(is_drainage, overlap, monotonicity, length, rank)` with
+   **rank = length x (1 - monotonicity)** so a long cross-cutter sits atop the rescue
+   queue and a creek (mono~1) sinks to rank 0. `link_polylines` runs on the KEPT set
+   **after** drainage removal (the contract), then the fit. Nepal end-to-end:
+   7063 -> 3323 flagged / 3740 kept -> 3680 linked -> 1599 reliable; dominant strike
+   **83 deg** (Himalayan grain preserved).
 
-## What to do next (in order)
+## Other science / engineering landed
 
-**Done since (drainage epic `3em`):** `5p3` verify, `j8t` hardening, **`xx2`
-integration** - `flag_drainage` standalone classifier (detector stays ML-swappable),
-review-flag not delete, per-trace `(is_drainage, score)`; wired into
-`detect_attitudes_nepal` (flagged excluded from attitudes + ranked review-queue CSV
-`debug/nepal_drainage_review_queue.csv`). Nepal 7063 -> 2475 flagged / 4588 kept ->
-2178 reliable; dominant strike 82 (Himalayan grain preserved).
+- **Continuity (`zod`):** `link_polylines(polylines, max_gap_px=5, max_angle_deg=20)`
+  rejoins fragments only on a **three-condition** undirected (mod-180) collinearity
+  test - the two end-tangents collinear AND the gap vector collinear with each tangent.
+  The gap-vector guard is what stops parallel-offset bedding layers from merging.
+- **Uncertainty floor (`85g`):** `fit_plane(..., correlation_length=500.0)` adds a
+  correlated random-tilt term so the MC budget stops averaging down ~1/sqrt(N). Floors
+  the dense-trace estimate (~0.66 deg vs the old ~0.034 deg at n=1000). De-confounds
+  `5ug`'s length-reliability metric. Disable with `None`/`<=0` (bit-for-bit legacy).
+- **Attitude rules (`5ug`, `docs/ATTITUDE_RULES.md`):** implausible-local-outlier bar
+  **strike Δ > 60° / dip Δ > 35°** (pooled p95 @ 1 km; review-trigger only, never
+  auto-reject; median local strike dev ~8 deg confirms the regional grain is locally
+  smooth). Morphology is V-dominant (56-72%), near-vertical `straight` rare (<3%).
 
-**Immediate:**
-1. **`planesight-zod` DONE** (branch `feat/continuity`) - continuity primitive landed.
-   `link_polylines(polylines, max_gap_px=5.0, max_angle_deg=20.0)` in
-   `core/detect/vectorize.py`: rejoins fragments when an endpoint is within
-   `max_gap_px` of another endpoint AND the join is a true continuation. Continuation =
-   three undirected (mod-180) collinearity checks within `max_angle_deg`: the two
-   end-tangents collinear with each other, AND the gap vector collinear with *each*
-   tangent. The **gap-vector guard is the key** to NOT merging parallel-offset bedding
-   layers (their tangents are collinear, but the connecting vector runs across the
-   layers, failing the guard). Iterates greedily (shortest gap first) to chain >2
-   fragments. Optional `close_gaps(mask, size)` (scipy `binary_closing`) opt-in bridges
-   1-2px raster gaps before `thin`. Pure numpy/scipy; 8 new risk tests in
-   `tests/test_vectorize.py` (colinear-merge, undirected mod-180, parallel-offset NO
-   merge, over-gap NO merge, junction-angle NO merge, >2 chaining, passthrough,
-   close_gaps). **CONTRACT (not yet wired): apply AFTER drainage removal** - `61f` owns
-   the pipeline step. Caveat: defaults (5px / 20deg) are unvalidated on real Nepal
-   fragments - tune in `61f` against a before/after fragment count.
-2. Run the drainage sweep on **Pakistan/Canada** to confirm the knee transfers now
-   that the algorithm is hardened (only validated on Nepal so far).
+## Process tooling added (the parallel-workflow experiment)
 
-**Attitude rules (`5ug`) DONE - measured thresholds now available for the blocked
-downstream pieces** (`docs/ATTITUDE_RULES.md`, driver `scripts/attitude_rules.py`,
-pure helpers `core/attitude/variability.py`):
-- **`planesight-gas`** (skeptic) - implausible-local-outlier bar: **strike Δ > 60°**
-  / **dip Δ > 35°** (pooled p95 at the **1 km** window; aggressive variant p90 =
-  40°/27°). Apply at ≥1 km scale and as *review*, not deletion - the tail mixes real
-  folds/cross-cutting with bad fits.
-- **`planesight-61f`** (refined drainage rule) - **confidence gate = `conditioning ≥
-  1e-3` AND `map_conditioning ≥ 1e-3` AND relief ≥ ~80 m (≈40·σ_z)**, NOT a length
-  threshold. Relief drives dip-uncertainty down monotonically in all three regions
-  (≤0.5° median, ≤1.5° p90 by 80 m); length is a *misleading* proxy - in low-relief
-  Pakistan reliability FALLS with length (conditioning-pass 90%→28%) because long
-  traces run contour-parallel / along drainage. Length is a weak secondary prior only.
-- Ground-truth N is healthy (354/556/541 reliable attitudes); morphology is
-  V-dominant (56-72%), near-vertical `straight` rare (<3%). The binding small-N is
-  neighbour coverage at small radii (250 m: 6/17/1 per region) - trust only ≥1 km.
-
-**Parallel / later:** infra remnants - `bcn` (S2 cloud compositing), `gj9` (per-AOI
-CRS policy), `1dg` (unified training GeoPackage). The big new phase is the **QGIS
-plugin integration** (GUI, QgsTask run, styled layers, human review/triage gate) -
-the path to a usable tool.
-
-### Uncertainty budget now has a correlated-error floor (`planesight-85g`, CLOSED)
-
-`fit_plane`'s MC uncertainty (`_estimate_uncertainty`) used to perturb each sample's
-elevation by **independent** Gaussian noise only, so for long, densely sampled traces
-it averaged down ~1/sqrt(N) and reported implausibly tiny error bars (Nepal median
-~0.3 deg, far less on the densest traces). Added a **correlated random-tilt term**:
-each MC iteration draws an isotropic horizontal gradient (slope 1-sigma =
-`sigma_z / correlation_length`) and adds that coherent planar tilt to every point.
-A single tilt rotates the whole cloud - hence the fitted plane - by ~atan(|grad|),
-an effect independent of N and of trace extent, so it puts a **floor** the dense-trace
-estimate can no longer average away.
-
-- **Knob:** `fit_plane(..., correlation_length=500.0)` (metres). Default 500 m =
-  mid-range GLO-30/TanDEM-X correlated-error scale (hundreds of m to ~1 km). Pass
-  `None`/`<=0` to disable and reproduce the legacy independent-only budget exactly
-  (backward-compatible; signature/defaults of existing calls unchanged).
-- **Effect** (Nepal-like trace, sigma_z=2 m, dip-direction 1-sigma): independent-only
-  collapses 0.17 deg (n=40) -> 0.034 deg (n=1000); correlated holds ~0.66 deg flat
-  across the same range (~19x the independent tail at n=1000). Dip 1-sigma floors
-  near ~0.22 deg vs independent's 0.066 deg at n=1000.
-- **De-confounds `planesight-5ug`:** the length-reliability "knee" was partly a
-  sample-count artifact of the old optimism; downstream confidence/length decisions
-  should re-read the budget with the correlated term on.
-- **Biggest caveat:** the headline floor is set almost entirely by `correlation_length`
-  (floor ~ sigma_z / L_c), and 500 m is an order-of-magnitude literature estimate, not
-  a value measured on GLO-30 here. Calibrate it against an empirical GLO-30 error
-  variogram before any hard threshold rests on the absolute number. Horizontal
-  misregistration (a second correlated source) is noted but not modelled.
+- **Verification hooks** (`.claude/settings.json` + `.claude/hooks/`): PostToolUse ruff
+  autofix, PreToolUse blocks `rm -rf`/force-push/push-to-main, **Stop gate** runs the
+  pure pytest suite (project-scoped; activate by launching Claude Code from the repo).
+- **Parallelization kit:** `/handoff <bead>` writes a task brief; `scripts/spawn_task.sh
+  <branch> <bead>` creates an isolated worktree (`BEADS_DB` wired to the canonical DB) +
+  kickoff prompt; `docs/PARALLEL_WORKFLOW.md` is the protocol + adversarial-verify
+  checklist. **Validated:** `5ug`, `zod`, `85g` all ran as fresh parallel sessions and
+  passed an independent adversarial pass (each had a real soft spot the generator
+  presented as settled).
+- **Skeptic verifier (`gas`):** `.claude/agents/skeptic.md` + `/verify` - a fresh,
+  unanchored agent that re-runs the evidence to break an empirical/geological claim
+  (methodology + geology checklists, the `5ug` thresholds + caveats).
 
 ---
+
+## Open follow-ups
+
+- **`pie`** - tune `link_polylines`: under-links at defaults on real Nepal (60/3740
+  merged); raise gap / link pre-simplification / verify no over-merge.
+- **`5b8`** - calibrate `correlation_length` (`L_c`) from an empirical GLO-30 error
+  variogram before any hard *absolute*-uncertainty threshold; model misregistration.
+- **`gjm`** - horizontal-bedding override (Grand Canyon calibration): topography-
+  following is suspect EXCEPT genuine contour-parallel horizontal bedding.
+- **Pakistan/Canada drainage sweep** - confirm the hardened knee transfers off steep
+  Nepal (only Nepal-validated so far).
+- **Infra:** `bcn` (S2 cloud compositing), `gj9` (per-AOI CRS), `1dg` (training
+  GeoPackage). Deferred: `luj` (shield AOI), `eu3` (bootstrap confirmation).
+- **The big phase: QGIS plugin GUI** - QgsTask run, styled layers, the human
+  review/triage gate. The path to a usable tool.
 
 ## Beads map
 
-- Drainage epic **`3em`** (in_progress) -> **`5p3`** + **`j8t`** + **`xx2`** + **`zod`**
-  CLOSED. Epic ready to close (its last child `zod` has landed); `61f` (refined
-  drainage rule + the post-drainage `link_polylines` integration) is the remaining
-  consumer.
-- `lph` (Phase 3 strike/dip engine) in_progress; mostly done in core, **`85g` CLOSED**
-  (correlated-tilt uncertainty floor; `5b8` filed to calibrate `correlation_length`).
-- Open infra: `bcn`, `gj9`, `1dg`; deferred `luj` (shield data), `eu3`
-  (bootstrap confirmation). Phases 0/1/2 epics closed.
+- **`3em`** (drainage epic) CLOSED: `5p3` + `j8t` + `xx2` + `zod` + `4l8` + `61f`.
+- **`gas`** (skeptic) CLOSED; **`85g`** (uncertainty) CLOSED; **`5ug`** (attitude rules)
+  CLOSED. `lph` (Phase 3 strike/dip) in_progress (core done).
+- Open: `pie`, `5b8`, `gjm`, `bcn`, `gj9`, `1dg`; deferred `luj`, `eu3`. Phases 0/1/2
+  epics closed.
 
 ## Working agreements / process notes
 
@@ -195,8 +139,7 @@ estimate can no longer average away.
   (push to `main` is policy-blocked - feature branch + PR, merge with `gh`).
 - **Background runs sometimes fail transiently** (S2-fetch network blips) - re-run in
   the foreground to confirm before assuming a code bug.
-- Visual review panels: `debug/bootstrap_review/` and `debug/drainage_test/`.
-- **Lesson this session:** trust the *measurement*, not the headline. The coverage
-  bug and the FN-dilution both produced confident-but-wrong numbers that fell apart
-  under a critical re-check. Verify before concluding; use the critical-reviewer
-  (fork) agent on big claims.
+- **Lesson (load-bearing):** trust the *measurement*, not the headline. The coverage
+  bug, the FN-dilution, and the length-threshold optimism all produced confident-but-
+  wrong numbers caught only by a critical re-check. Verify before concluding; the
+  `gas` skeptic / `/verify` exists for exactly this.
