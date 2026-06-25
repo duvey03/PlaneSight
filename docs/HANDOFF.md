@@ -111,9 +111,38 @@ review-flag not delete, per-trace `(is_drainage, score)`; wired into
    that the algorithm is hardened (only validated on Nepal so far).
 
 **Parallel / later:** infra remnants - `bcn` (S2 cloud compositing), `gj9` (per-AOI
-CRS policy), `1dg` (unified training GeoPackage), `85g` (correlated-error
-uncertainty). The big new phase is the **QGIS plugin integration** (GUI, QgsTask
-run, styled layers, human review/triage gate) - the path to a usable tool.
+CRS policy), `1dg` (unified training GeoPackage). The big new phase is the **QGIS
+plugin integration** (GUI, QgsTask run, styled layers, human review/triage gate) -
+the path to a usable tool.
+
+### Uncertainty budget now has a correlated-error floor (`planesight-85g`, CLOSED)
+
+`fit_plane`'s MC uncertainty (`_estimate_uncertainty`) used to perturb each sample's
+elevation by **independent** Gaussian noise only, so for long, densely sampled traces
+it averaged down ~1/sqrt(N) and reported implausibly tiny error bars (Nepal median
+~0.3 deg, far less on the densest traces). Added a **correlated random-tilt term**:
+each MC iteration draws an isotropic horizontal gradient (slope 1-sigma =
+`sigma_z / correlation_length`) and adds that coherent planar tilt to every point.
+A single tilt rotates the whole cloud - hence the fitted plane - by ~atan(|grad|),
+an effect independent of N and of trace extent, so it puts a **floor** the dense-trace
+estimate can no longer average away.
+
+- **Knob:** `fit_plane(..., correlation_length=500.0)` (metres). Default 500 m =
+  mid-range GLO-30/TanDEM-X correlated-error scale (hundreds of m to ~1 km). Pass
+  `None`/`<=0` to disable and reproduce the legacy independent-only budget exactly
+  (backward-compatible; signature/defaults of existing calls unchanged).
+- **Effect** (Nepal-like trace, sigma_z=2 m, dip-direction 1-sigma): independent-only
+  collapses 0.17 deg (n=40) -> 0.034 deg (n=1000); correlated holds ~0.66 deg flat
+  across the same range (~19x the independent tail at n=1000). Dip 1-sigma floors
+  near ~0.22 deg vs independent's 0.066 deg at n=1000.
+- **De-confounds `planesight-5ug`:** the length-reliability "knee" was partly a
+  sample-count artifact of the old optimism; downstream confidence/length decisions
+  should re-read the budget with the correlated term on.
+- **Biggest caveat:** the headline floor is set almost entirely by `correlation_length`
+  (floor ~ sigma_z / L_c), and 500 m is an order-of-magnitude literature estimate, not
+  a value measured on GLO-30 here. Calibrate it against an empirical GLO-30 error
+  variogram before any hard threshold rests on the absolute number. Horizontal
+  misregistration (a second correlated source) is noted but not modelled.
 
 ---
 
@@ -122,8 +151,8 @@ run, styled layers, human review/triage gate) - the path to a usable tool.
 - Drainage epic **`3em`** (in_progress) -> **`5p3`** + **`j8t`** + **`xx2`** CLOSED;
   remaining **`zod`** (continuity, next). Epic ready to close once `zod` lands (or
   defer `zod` and close the epic - it is the last child).
-- `lph` (Phase 3 strike/dip engine) in_progress; mostly done in core, `85g` remains.
-- Open infra: `bcn`, `gj9`, `1dg`, `85g`; deferred `luj` (shield data), `eu3`
+- `lph` (Phase 3 strike/dip engine) in_progress; mostly done in core, `85g` CLOSED.
+- Open infra: `bcn`, `gj9`, `1dg`; deferred `luj` (shield data), `eu3`
   (bootstrap confirmation). Phases 0/1/2 epics closed.
 
 ## Working agreements / process notes
