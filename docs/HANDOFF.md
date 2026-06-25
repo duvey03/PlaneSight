@@ -1,6 +1,6 @@
 # PlaneSight - Session Handoff
 
-**Updated:** 2026-06-24.
+**Updated:** 2026-06-24 (+ Pakistan/Canada drainage transferability sweep, `amn`).
 
 PlaneSight = a QGIS plugin that, for any AOI, aggregates global DEM (Copernicus
 GLO-30) + Sentinel-2, auto-detects geological bedding/contact traces, and computes
@@ -117,8 +117,14 @@ traces **creeks**, not just contacts. The fix and its validation:
   variogram before any hard *absolute*-uncertainty threshold; model misregistration.
 - **`gjm`** - horizontal-bedding override (Grand Canyon calibration): topography-
   following is suspect EXCEPT genuine contour-parallel horizontal bedding.
-- **Pakistan/Canada drainage sweep** - confirm the hardened knee transfers off steep
-  Nepal (only Nepal-validated so far).
+- **Pakistan/Canada drainage sweep (`planesight-amn`, DONE)** - the Nepal `accum=15`
+  knee **transfers to Canada** (14.8% channel, clean dendritic creek panels) but **NOT
+  to Pakistan** (33% channel at 15; needs `accum~115-120`, and a high-end sweep shows
+  Pakistan has **no knee at all** - flow-accum is a blunt discriminator on low-relief
+  arid terrain). Verdict + per-region accum + caveats in `docs/DRAINAGE_SWEEP.md`;
+  panels under `debug/drainage_{test,verify,residual}/{pakistan,canada}/`. Follow-up
+  `planesight-l2c`: replace fixed `accum` with a density-targeting rule (or a different
+  low-relief channel definition) in `core/detect/drainage.py`.
 - **Infra:** `bcn` (S2 cloud compositing), `gj9` (per-AOI CRS), `1dg` (training
   GeoPackage). Deferred: `luj` (shield AOI), `eu3` (bootstrap confirmation).
 - **The big phase: QGIS plugin GUI** - QgsTask run, styled layers, the human
