@@ -48,6 +48,7 @@ data-driven thresholds.
 | **Correlated-error uncertainty floor** (`correlation_length`) | `core/attitude/plane_fit.py` | done (`85g`) |
 | **Data-driven attitude rules** (local variability, morphology/length priors) | `core/attitude/variability.py`, `docs/ATTITUDE_RULES.md` | done (`5ug`) |
 | End-to-end auto strike/dip on Nepal (drainage-flag + link + ranked queue) | `scripts/detect_attitudes_nepal.py` | done (`61f`) |
+| **Stereonet math** (equal-area projection, Fisher mean/alpha95, orientation tensor, axial mean, fold axis + Woodcock K, rose) | `core/structural/stereonet.py`, `docs/STEREONET_MATH.md` | **done (`8et`)** |
 
 ---
 
