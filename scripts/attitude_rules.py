@@ -67,7 +67,11 @@ COND_RELIABLE = 1e-3
 MAP_COND_RELIABLE = 1e-3
 # Sliding-window radii (m) for local variability.
 WINDOWS = (250.0, 500.0, 1000.0, 2000.0)
-# Length bins (m) for the length-vs-reliability knee (61f).
+# Relief bins (m) for the relief-vs-reliability knee - the REAL confidence gate for
+# 61f (relief / DEM-noise ratio), not length (length inverts in low-relief terrain).
+RELIEF_BINS = (0, 10, 20, 30, 50, 80, 120, 200, 400, np.inf)
+# Length bins (m) for the length-vs-reliability check (descriptive prior only - kept
+# to demonstrate that length is NOT a clean confidence signal; see RELIEF_BINS).
 LENGTH_BINS = (0, 250, 500, 1000, 2000, 4000, 8000, np.inf)
 
 
@@ -200,27 +204,47 @@ def morphology_and_length(records):
     return lengths_all, lengths_rel
 
 
-def length_reliability_knee(records):
-    """Reliability (conditioning-pass fraction + median dip uncertainty) per length bin.
-
-    The knee - the length above which the pass fraction plateaus - is the
-    data-driven 'minimum confident length' for planesight-61f.
-    """
-    lengths = np.array([r["length"] for r in records])
+def _knee_table(records, key, bins, header):
+    """Reliability% + median/p90 dip-uncertainty per bin of ``key`` (relief or length)."""
+    vals = np.array([r[key] for r in records])
     reliable = np.array([r["reliable"] for r in records])
     dip_unc = np.array([r["dip_unc"] for r in records])
-    print("    length bin (m)     n   reliable%   median dip-unc")
-    for lo, hi in zip(LENGTH_BINS[:-1], LENGTH_BINS[1:]):
-        m = (lengths >= lo) & (lengths < hi)
+    print(f"    {header:>14s}     n   reliable%   median dip-unc   p90 dip-unc")
+    for lo, hi in zip(bins[:-1], bins[1:]):
+        m = (vals >= lo) & (vals < hi)
         n = int(m.sum())
         if n == 0:
             continue
         frac = 100.0 * reliable[m].mean()
         mu = dip_unc[m]
         mu = mu[np.isfinite(mu)]
-        mu_s = f"{np.median(mu):4.1f} deg" if mu.size else "  n/a"
+        med = f"{np.median(mu):5.2f}" if mu.size else "  n/a"
+        p90 = f"{np.percentile(mu, 90):5.2f}" if mu.size else "  n/a"
         hi_s = "inf" if np.isinf(hi) else f"{int(hi)}"
-        print(f"    [{int(lo):5d}, {hi_s:>5s})  {n:5d}    {frac:5.1f}      {mu_s}")
+        print(f"    [{int(lo):5d}, {hi_s:>5s})  {n:5d}    {frac:5.1f}      "
+              f"{med} deg      {p90} deg")
+
+
+def relief_reliability_knee(records):
+    """Relief-vs-reliability knee - the data-driven CONFIDENCE GATE for planesight-61f.
+
+    Relief (vertical range a trace samples) drives dip-uncertainty monotonically in
+    every region (no length-style inversion): as relief approaches the DEM vertical
+    noise floor the dip is unconstrained (ARCHITECTURE.md S6.4). The knee where
+    dip-uncertainty stabilises is the recommended relief gate (expressed as a
+    relief / sigma_z ratio so it transfers across DEMs).
+    """
+    _knee_table(records, "relief", RELIEF_BINS, "relief bin (m)")
+
+
+def length_reliability_knee(records):
+    """Length-vs-reliability - DESCRIPTIVE ONLY (length is not a clean gate).
+
+    Kept to show *why* length is rejected as the confidence signal: in low-relief
+    terrain (Pakistan) the conditioning-pass fraction FALLS as length grows, because
+    long traces there run contour-parallel / along drainage. Gate on relief, not this.
+    """
+    _knee_table(records, "length", LENGTH_BINS, "length bin (m)")
 
 
 def write_csv(region, records):
@@ -259,7 +283,9 @@ def main():
 
         print("\n  -- morphology + length priors --")
         morphology_and_length(records)
-        print("\n  -- length vs reliability (knee = min confident length) --")
+        print("\n  -- relief vs reliability (THE confidence gate: relief/sigma_z) --")
+        relief_reliability_knee(records)
+        print("\n  -- length vs reliability (descriptive: length is NOT a clean gate) --")
         length_reliability_knee(records)
 
     # Pooled recommended thresholds across all three regions.

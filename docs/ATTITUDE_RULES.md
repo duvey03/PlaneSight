@@ -3,7 +3,7 @@
 Empirically-measured thresholds mined from the geologist's hand-traced
 Nepal/Pakistan/Canada datasets, to replace guessed numbers in two blocked pieces:
 
-- **planesight-61f** (refined drainage rule) needs a *minimum confident trace length*.
+- **planesight-61f** (refined drainage rule) needs a *confidence gate* on attitudes.
 - **planesight-gas** (skeptic verifier) needs an *implausible local strike/dip change* bar.
 
 Driver: `scripts/attitude_rules.py` (headless GDAL; not in the pure suite). Pure
@@ -18,15 +18,29 @@ undirected (mod 180); all strike means/deviations use doubled-angle circular sta
 
 ---
 
+## HEADLINE: gate confidence on conditioning + relief, NOT length
+
+**A trace's length does not predict whether its attitude is trustworthy.** In
+low-relief Pakistan the conditioning-pass fraction *falls* as length grows
+(90%→28% from <250 m to 2–4 km) because long traces there run contour-parallel /
+along drainage. **Relief** (the vertical range a trace samples) is the clean,
+terrain-independent signal: it drives dip-uncertainty down monotonically in *every*
+region, with no inversion. So the confidence rule for 61f is a **relief / DEM-noise
+gate**, not a minimum length.
+
 ## Recommended thresholds
 
 | Rule | Recommended | Basis |
 |---|---|---|
 | **Implausible local outlier** (skeptic, gas) | **strike Δ > 60°**, companion **dip Δ > 35°** | pooled **p95** of local deviation at the **1 km** window (n=691) |
-| **Minimum confident length** (drainage, 61f) | **500 m** (≈17 DEM samples @ 30 m) | length-vs-reliability knee; below it dip-uncertainty climbs to 2.7–4.6° |
+| **Attitude confidence gate** (drainage, 61f) | `conditioning ≥ 1e-3` **and** `map_conditioning ≥ 1e-3` **and** **relief ≥ ~80 m (≈40·σ_z)** | relief-vs-reliability knee; below it median dip-unc climbs past ~0.8°, p90 past ~2° |
 
-A more **aggressive** outlier bar (pooled p90 @ 1 km) would be strike Δ > 40°, dip Δ > 27°.
-Use p95 (60°/35°) to trigger skeptic **review**, not auto-deletion — see caveats.
+- Aggressive outlier variant (pooled p90 @ 1 km): strike Δ > 40°, dip Δ > 27°. Use
+  p95 (60°/35°) to trigger skeptic **review**, not auto-deletion (see caveats).
+- σ_z = GLO-30 vertical 1-σ ≈ 2 m, so ~80 m relief = ~40× the noise floor. Expressing
+  the gate as a **ratio** (relief ≥ ~40·σ_z) lets it transfer to other DEMs.
+- Length is retained only as a **descriptive prior** (median reliable length
+  618–1333 m); it is NOT the gate.
 
 ---
 
@@ -38,7 +52,7 @@ reliable attitudes within a radius. High percentiles = the "implausible" tail.
 
 **Pooled across all three regions** (strike-deviation degrees):
 
-| window | median | IQR | p90 | p95 | n (have ≥2 neighbours) |
+| window | median | IQR | p90 | p95 | n (≥2 neighbours) |
 |---|---|---|---|---|---|
 | 250 m | 4.6 | 1.6–12.7 | 26.6 | — | **24** (too thin) |
 | 500 m | 4.7 | 2.3–15.3 | 30.6 | 51.3 | 211 |
@@ -47,19 +61,47 @@ reliable attitudes within a radius. High percentiles = the "implausible" tail.
 
 Dip deviation is flatter: pooled p90 ≈ 27°, p95 ≈ 34° at both 500 m and 1 km.
 
-**Why 1 km / p95 → ~60° strike, ~35° dip.** The 1 km window is the smallest radius
-at which all three regions are well-populated with neighbour pairs (250 m has only
-6/17/1 per region — unusable; Canada has just 12 at 500 m). The median local strike
-deviation is only ~8–11°, so the regional grain *is* locally smooth; the implausible
-tail begins around the 90th–95th percentile. p95 (~60° strike) is the conservative
-"this is almost surely wrong or a genuine cross-cutting structure" bar; p90 (~40°)
-is the aggressive variant.
+The 1 km window is the smallest radius at which all three regions are well-populated
+(250 m has only 6/17/1 neighbour pairs per region; Canada has 12 at 500 m). The
+median local strike deviation is only ~8°, so the regional grain *is* locally smooth;
+the implausible tail begins around p90–p95. **p95 (~60° strike / ~35° dip)** is the
+conservative "almost surely wrong or a genuine cross-cutting structure" bar.
 
-Per-region p90 strike deviation @ 1 km: Nepal 57.5° (n=207), Pakistan 28.3° (n=362),
-Canada 44.8° (n=122) — Pakistan's grain is tighter, Nepal's noisier; the pooled
-number sits between them.
+## 2. The confidence gate — relief vs reliability (61f)
 
-## 2. Morphology + length priors
+Reliability % = fraction passing the conditioning gate; dip-unc = median MC dip 1-σ.
+Relief drives both monotonically in all three regions:
+
+```
+            Nepal               Pakistan             Canada
+relief(m)  rel%  med  p90      rel%  med  p90        rel%  med  p90   (dip-unc°)
+ 0–30      ~90   1.5  4.7      ~55  2.7  7.4         ~60  1.1  1.8
+ 30–50      62   0.7  2.1       67  1.4  4.6          66  0.8  1.6
+ 50–80      78   0.5  1.2       80  0.8  2.8          75  0.6  1.6
+ 80–120     90   0.4  1.0       74  0.5  1.2          75  0.4  1.6
+ 120–200    91   0.2  1.3       80  0.2  0.6          83  0.3  0.9
+ 200+       97   0.2  0.5       82  0.2  0.5          88+ 0.1  0.6
+```
+
+Below ~30 m relief (relief ≈ the 2 m DEM noise floor × ~15) dip-uncertainty is
+1–2.9° and the fit often fails conditioning. By **~80 m relief (≈40·σ_z)** median
+dip-uncertainty is ≤0.5° and p90 ≤1.5° in every region — the recommended floor. A
+stricter 120 m floor buys p90 ≤1.3°; a lenient 50 m floor still risks p90 ~2.8°
+(Pakistan).
+
+**Length, by contrast, is not a clean gate** (kept in the driver only to show this):
+
+```
+length bin   Nepal rel%   Pakistan rel%   Canada rel%
+250–500m       84            84              69
+500–1k         85            73              80
+1k–2k          94            50              86
+2k–4k          89            28              84
+```
+
+Pakistan inverts — longer traces are *less* reliable. Gate on relief, not length.
+
+## 3. Morphology priors
 
 **Rule-of-V's morphology mix** (reliable fits; class from fitted dip: ≥75° =
 `straight`/near-vertical strata, ≤20° = `contour-parallel`/near-horizontal bedding,
@@ -75,33 +117,6 @@ The diagnostic **V** dominates everywhere (56–72%); near-vertical `straight` s
 are rare (<3%); a substantial `contour-parallel` minority (26–44%) reflects
 shallow-dipping bedding hugging contours. **Prior for the skeptic:** an isolated
 near-vertical (`straight`) attitude is a-priori unlikely and deserves scrutiny.
-
-**Length distribution** (reliable traces, metres):
-
-| region | median | IQR | p90 |
-|---|---|---|---|
-| Nepal | 793 | 558–1019 | 1485 |
-| Pakistan | 618 | 437–960 | 1435 |
-| Canada | 1333 | 926–1788 | 2354 |
-
-**Length vs reliability (the 61f knee).** Reliability % = fraction passing the
-conditioning gate; dip-unc = median MC dip 1-σ (lower = more confident):
-
-```
-            Nepal              Pakistan            Canada
-len bin    rel%  dip-unc      rel%  dip-unc       rel%  dip-unc
-0–250m     100%   1.4°        90%    4.6°          —      —
-250–500    84%    0.8°        84%    2.7°         69%    1.0°
-500–1k     85%    0.3°        73%    1.5°         80%    0.5°
-1k–2k      94%    0.2°        50%    1.0°         86%    0.2°
-2k–4k      89%    0.1°        28%    0.6°         84%    0.1°
-```
-
-Dip uncertainty falls **monotonically** with length in all three regions and crosses
-~1.5° by the 500 m bin everywhere. Below ~250–500 m, the worst region (low-relief
-Pakistan) carries 2.7–4.6° dip uncertainty — too coarse to trust. Hence **500 m**
-as the minimum confident length: ~17 samples at 30 m, dip-unc ≤1.5° in all regions,
-just below the reliable-trace medians (618–1333 m).
 
 ---
 
@@ -119,23 +134,24 @@ needs the **≥1 km** window; the 250 m window (and Canada at 500 m, n=12) is to
 
 ## Caveats (read before trusting the numbers)
 
-- **BIGGEST: the outlier bar is window- and region-sensitive and its tail conflates
-  real geology with bad fits.** p90 strike-deviation swings 31°→41° between the
-  500 m and 1 km windows, and per-region from 28° (Pakistan) to 58° (Nepal); the
-  small radii rest on as few as 1–17 neighbour pairs. Even at 1 km the tail mixes
-  *genuine* structure (fold hinges, cross-cutting trends) with mis-fits. → The bar
-  should gate skeptic **review**, never silent rejection, and should be applied at
-  the ≥1 km scale only.
-- **Positive-unlabeled.** These are curated hand traces, not a complete census of
-  contacts. The distributions describe *plausible variation among what the geologist
-  chose to draw*; they bound neither false-negatives nor the behaviour of
-  auto-detected traces (which are noisier — `detect_attitudes_nepal.py` uses the
-  stricter `conditioning >= 1e-2`).
-- **Length is necessary, not sufficient (Pakistan inversion).** In low-relief
-  Pakistan, conditioning-pass **falls** with length (90%→28%) because long traces
-  there are contour-parallel / drainage-following. 61f must not read "longer = better":
-  500 m is a floor; relief/conditioning must still gate independently above it.
+- **BIGGEST: length is a misleading confidence proxy — gate on relief + conditioning.**
+  In low-relief terrain the longest traces are the *least* reliable (Pakistan
+  conditioning-pass 90%→28% with length) because they run contour-parallel / along
+  drainage. Any rule that reads "longer = more trustworthy" is wrong here; 61f must
+  gate on relief ≥ ~40·σ_z **and** conditioning, with length used at most as a weak
+  secondary prior.
+- **The outlier bar is window- and region-sensitive and its tail mixes real geology
+  with bad fits.** p90 strike-deviation swings 31°→41° between the 500 m and 1 km
+  windows, and per-region from 28° (Pakistan) to 58° (Nepal); the small radii rest on
+  as few as 1–17 neighbour pairs. Even at 1 km the tail includes *genuine* structure
+  (fold hinges, cross-cutting trends). → Apply the bar at the ≥1 km scale only, and as
+  skeptic **review**, never silent rejection.
+- **Positive-unlabeled.** These are curated hand traces, not a complete census. The
+  distributions describe *plausible variation among what the geologist drew*; they
+  bound neither false-negatives nor auto-detected traces (which are noisier —
+  `detect_attitudes_nepal.py` uses the stricter `conditioning >= 1e-2`).
 - **Morphology depends on the fitted dip**, so it is only defined for the reliable
   subset and inherits the conditioning gate's choices.
 - DEM dip-uncertainty assumes independent per-point noise (optimistic lower bound;
-  see `plane_fit._estimate_uncertainty` and planesight-85g).
+  see `plane_fit._estimate_uncertainty` and planesight-85g). The relief gate is the
+  practical guard against this: it keeps the signal well above the noise floor.

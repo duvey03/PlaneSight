@@ -118,10 +118,12 @@ pure helpers `core/attitude/variability.py`):
   / **dip Δ > 35°** (pooled p95 at the **1 km** window; aggressive variant p90 =
   40°/27°). Apply at ≥1 km scale and as *review*, not deletion - the tail mixes real
   folds/cross-cutting with bad fits.
-- **`planesight-61f`** (refined drainage rule) - **minimum confident length = 500 m**
-  (~17 DEM samples @ 30 m; dip-unc ≤1.5° in all regions). NB necessary-not-sufficient:
-  in low-relief Pakistan reliability *falls* with length, so relief/conditioning must
-  still gate above the floor.
+- **`planesight-61f`** (refined drainage rule) - **confidence gate = `conditioning ≥
+  1e-3` AND `map_conditioning ≥ 1e-3` AND relief ≥ ~80 m (≈40·σ_z)**, NOT a length
+  threshold. Relief drives dip-uncertainty down monotonically in all three regions
+  (≤0.5° median, ≤1.5° p90 by 80 m); length is a *misleading* proxy - in low-relief
+  Pakistan reliability FALLS with length (conditioning-pass 90%→28%) because long
+  traces run contour-parallel / along drainage. Length is a weak secondary prior only.
 - Ground-truth N is healthy (354/556/541 reliable attitudes); morphology is
   V-dominant (56-72%), near-vertical `straight` rare (<3%). The binding small-N is
   neighbour coverage at small radii (250 m: 6/17/1 per region) - trust only ≥1 km.
