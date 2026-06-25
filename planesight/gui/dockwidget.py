@@ -1,23 +1,35 @@
-"""PlaneSight dockwidget (GUI milestone M1): the data-aggregator panel.
+"""PlaneSight dockwidget: the workflow UI, one tab per capability.
 
-The first real workflow UI: choose an AOI (current map extent or a drawn rectangle),
-fetch the DEM + Sentinel-2 + terrain derivatives via a background AggregateTask, and
-load the styled rasters. Later milestones add the strike/dip, structural-analysis, and
-detection/review panels to this same dock. All heavy work runs off the UI thread.
+Tabs grow with the milestones:
+- **Data** (M1): AOI -> fetch DEM + Sentinel-2 + derivatives -> styled, grouped layers.
+- **Strike/Dip** (M2): pick a trace layer + a DEM layer -> fit strike/dip along each
+  trace -> styled attitude markers. Works on ANY traces (incl. hand-drawn), decoupled
+  from detection.
+Later milestones add Analyze (stereonet) and Detect/Review tabs. All heavy work runs
+off the UI thread in QgsTasks.
 """
 
 from __future__ import annotations
 
 import tempfile
 
+import numpy as np
 from qgis.core import (
     QgsApplication,
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
+    QgsFeature,
+    QgsField,
+    QgsGeometry,
+    QgsMapLayerProxyModel,
+    QgsPointXY,
     QgsProject,
     QgsRasterLayer,
+    QgsVectorLayer,
+    QgsWkbTypes,
 )
-from qgis.gui import QgsDockWidget, QgsMapToolExtent
+from qgis.gui import QgsDockWidget, QgsMapLayerComboBox, QgsMapToolExtent
+from qgis.PyQt.QtCore import QVariant
 from qgis.PyQt.QtWidgets import (
     QCheckBox,
     QGroupBox,
@@ -25,25 +37,29 @@ from qgis.PyQt.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from ..tasks.aggregate import AggregateTask
+from ..tasks.attitudes import AttitudeTask
+from .styling import style_attitudes
 
 WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 MAX_AOI_DEG = 0.5      # v1 guard (~55 km/side) against accidental continent-sized fetches
 
 
 class PlaneSightDockWidget(QgsDockWidget):
-    """Dockable AOI -> layers panel."""
+    """Dockable, tabbed PlaneSight workflow panel."""
 
     def __init__(self, iface, parent=None):
         super().__init__("PlaneSight", parent)
         self.iface = iface
         self.canvas = iface.mapCanvas()
-        self._task = None
-        self._pending_bbox = None               # AOI of the in-flight fetch (for naming)
+        self._task = None                       # aggregate task
+        self._att_task = None                   # attitude task
+        self._pending_bbox = None
         self._drawn = None                      # QgsRectangle in canvas CRS, or None
         self._prev_tool = None
         self._extent_tool = QgsMapToolExtent(self.canvas)
@@ -52,8 +68,39 @@ class PlaneSightDockWidget(QgsDockWidget):
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
-        root = QWidget()
-        layout = QVBoxLayout(root)
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._build_data_tab(), "Data")
+        self._tabs.addTab(self._build_attitude_tab(), "Strike/Dip")
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+        self.setWidget(self._tabs)
+        self.canvas.extentsChanged.connect(self._refresh_bbox)
+        self._refresh_bbox()
+
+    def _on_tab_changed(self, index):
+        if self._tabs.tabText(index) == "Strike/Dip":
+            self._apply_default_selections()
+
+    def _apply_default_selections(self):
+        """Point the Strike/Dip combos at sensible layers (PlaneSight DEM + user traces)."""
+        project = QgsProject.instance()
+        cur_dem = self.cmb_dem.currentLayer()
+        if cur_dem is None or not cur_dem.name().startswith("PlaneSight DEM"):
+            for lyr in project.mapLayers().values():
+                if lyr.type() == lyr.RasterLayer and lyr.name().startswith("PlaneSight DEM"):
+                    self.cmb_dem.setLayer(lyr)
+                    break
+        cur_tr = self.cmb_traces.currentLayer()
+        if cur_tr is None or cur_tr.name().startswith("PlaneSight"):
+            for lyr in project.mapLayers().values():
+                if (lyr.type() == lyr.VectorLayer
+                        and QgsWkbTypes.geometryType(lyr.wkbType()) == QgsWkbTypes.LineGeometry
+                        and not lyr.name().startswith("PlaneSight")):
+                    self.cmb_traces.setLayer(lyr)
+                    break
+
+    def _build_data_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
 
         aoi = QGroupBox("Area of interest")
         av = QVBoxLayout(aoi)
@@ -78,20 +125,44 @@ class PlaneSightDockWidget(QgsDockWidget):
         self.btn_fetch = QPushButton("Fetch layers")
         self.btn_fetch.clicked.connect(self._on_fetch)
         layout.addWidget(self.btn_fetch)
-
         self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
         layout.addWidget(self.progress)
         self.lbl_status = QLabel("")
         self.lbl_status.setWordWrap(True)
         layout.addWidget(self.lbl_status)
-
         layout.addStretch(1)
-        self.setWidget(root)
-        self.canvas.extentsChanged.connect(self._refresh_bbox)
-        self._refresh_bbox()
+        return tab
 
-    # ----------------------------------------------------------------- AOI
+    def _build_attitude_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        box = QGroupBox("Strike / dip from traces")
+        bv = QVBoxLayout(box)
+        bv.addWidget(QLabel("Trace layer (lines):"))
+        self.cmb_traces = QgsMapLayerComboBox()
+        self.cmb_traces.setFilters(QgsMapLayerProxyModel.LineLayer)
+        bv.addWidget(self.cmb_traces)
+        bv.addWidget(QLabel("DEM layer (raster):"))
+        self.cmb_dem = QgsMapLayerComboBox()
+        self.cmb_dem.setFilters(QgsMapLayerProxyModel.RasterLayer)
+        bv.addWidget(self.cmb_dem)
+        layout.addWidget(box)
+
+        self.btn_fit = QPushButton("Compute strike/dip")
+        self.btn_fit.clicked.connect(self._on_compute_attitudes)
+        layout.addWidget(self.btn_fit)
+        self.att_progress = QProgressBar()
+        self.att_progress.setRange(0, 0)        # busy indicator (fit is one quick step)
+        self.att_progress.hide()
+        layout.addWidget(self.att_progress)
+        self.att_status = QLabel("")
+        self.att_status.setWordWrap(True)
+        layout.addWidget(self.att_status)
+        layout.addStretch(1)
+        return tab
+
+    # ----------------------------------------------------------------- AOI (M1)
     def _on_aoi_mode(self):
         if self.rb_draw.isChecked():
             self._prev_tool = self.canvas.mapTool()
@@ -127,7 +198,7 @@ class PlaneSightDockWidget(QgsDockWidget):
             f"W {b[0]:.4f}   S {b[1]:.4f}\nE {b[2]:.4f}   N {b[3]:.4f}"
         )
 
-    # ----------------------------------------------------------------- run
+    # ----------------------------------------------------------------- fetch (M1)
     def _on_fetch(self):
         if self._task is not None:
             return
@@ -170,15 +241,21 @@ class PlaneSightDockWidget(QgsDockWidget):
     def _on_done(self):
         specs = list(self._task.specs)
         project = QgsProject.instance()
-        group = project.layerTreeRoot().insertGroup(0, self._group_name(self._pending_bbox))
+        # append (not insert at 0) so PlaneSight rasters sit BELOW pre-existing
+        # layers/groups - keeps the user's traces etc. visible on top.
+        group = project.layerTreeRoot().addGroup(self._group_name(self._pending_bbox))
         added = 0
-        # reversed so the imagery/derivatives sit above the DEM in the group's draw order
-        for spec in reversed(specs):
+        dem_layer = None
+        for spec in reversed(specs):   # imagery/derivatives above the DEM
             layer = QgsRasterLayer(spec.path, spec.name)
             if layer.isValid():
-                project.addMapLayer(layer, False)   # False: place it under the group, not root
+                project.addMapLayer(layer, False)
                 group.addLayer(layer)
+                if spec.kind == "dem":
+                    dem_layer = layer
                 added += 1
+        if dem_layer is not None:
+            self.cmb_dem.setLayer(dem_layer)        # point Strike/Dip at the new DEM
         self.progress.setValue(100)
         self.lbl_status.setText(f"Loaded {added} layers into '{group.name()}'.")
         self._reset_task()
@@ -191,3 +268,100 @@ class PlaneSightDockWidget(QgsDockWidget):
     def _reset_task(self):
         self.btn_fetch.setEnabled(True)
         self._task = None
+
+    # ------------------------------------------------------- strike/dip (M2)
+    def _extract_world_traces(self, layer, dst_crs):
+        """(Multi)line features -> list of (N, 2) numpy arrays in dst_crs world coords."""
+        xform = QgsCoordinateTransform(layer.crs(), dst_crs, QgsProject.instance())
+        traces = []
+        for feat in layer.getFeatures():
+            geom = feat.geometry()
+            if geom is None or geom.isEmpty():
+                continue
+            parts = geom.asMultiPolyline() if geom.isMultipart() else [geom.asPolyline()]
+            for part in parts:
+                if len(part) < 2:
+                    continue
+                pts = [(q.x(), q.y()) for q in (xform.transform(p) for p in part)]
+                traces.append(np.array(pts, dtype=float))
+        return traces
+
+    def _on_compute_attitudes(self):
+        if self._att_task is not None:
+            return
+        trace_layer = self.cmb_traces.currentLayer()
+        dem_layer = self.cmb_dem.currentLayer()
+        if trace_layer is None or dem_layer is None:
+            self.att_status.setText("Pick both a trace layer and a DEM layer.")
+            return
+        try:
+            traces = self._extract_world_traces(trace_layer, dem_layer.crs())
+        except Exception as exc:                # noqa: BLE001
+            self.att_status.setText(f"Could not read traces: {exc}")
+            return
+        if not traces:
+            self.att_status.setText("No line features found in the trace layer.")
+            return
+        self._att_crs = dem_layer.crs()
+        self._att_task = AttitudeTask(traces, dem_layer.source())
+        self._att_task.taskCompleted.connect(self._on_att_done)
+        self._att_task.taskTerminated.connect(self._on_att_failed)
+        self.btn_fit.setEnabled(False)
+        self.att_progress.show()
+        self.att_status.setText(f"Fitting strike/dip along {len(traces)} traces ...")
+        QgsApplication.taskManager().addTask(self._att_task)
+
+    def _on_att_done(self):
+        atts = list(self._att_task.attitudes)
+        if not atts:
+            self.att_status.setText(
+                "0 attitudes fitted - do the trace layer and DEM cover the same area? "
+                "Traces sampled outside the DEM footprint are skipped."
+            )
+            self._reset_att_task()
+            return
+        layer = QgsVectorLayer(
+            f"Point?crs={self._att_crs.authid()}", "PlaneSight attitudes", "memory"
+        )
+        prov = layer.dataProvider()
+        prov.addAttributes([
+            QgsField("strike", QVariant.Double),
+            QgsField("dip", QVariant.Double),
+            QgsField("dip_dir", QVariant.Double),
+            QgsField("dip_unc", QVariant.Double),
+            QgsField("conditioning", QVariant.Double),
+            QgsField("reliable", QVariant.Int),
+        ])
+        layer.updateFields()
+        feats = []
+        for ap in atts:
+            a = ap.attitude
+            f = QgsFeature(layer.fields())
+            f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(ap.x, ap.y)))
+            f.setAttributes([
+                float(a.strike), float(a.dip), float(a.dip_direction),
+                float(a.dip_uncertainty), float(a.conditioning), int(ap.reliable),
+            ])
+            feats.append(f)
+        prov.addFeatures(feats)
+        layer.updateExtents()
+        try:
+            style_attitudes(layer)
+        except Exception:                       # noqa: BLE001 - styling is non-fatal
+            pass
+        QgsProject.instance().addMapLayer(layer)
+        n_rel = sum(ap.reliable for ap in atts)
+        self.att_status.setText(
+            f"Fitted {len(atts)} attitudes ({n_rel} reliable) -> 'PlaneSight attitudes'."
+        )
+        self._reset_att_task()
+
+    def _on_att_failed(self):
+        err = getattr(self._att_task, "error", None)
+        self.att_status.setText("Canceled." if err is None else f"Failed: {err}")
+        self._reset_att_task()
+
+    def _reset_att_task(self):
+        self.att_progress.hide()
+        self.btn_fit.setEnabled(True)
+        self._att_task = None

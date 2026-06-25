@@ -11,8 +11,6 @@ from __future__ import annotations
 from qgis.core import Qgis, QgsMessageLog, QgsTask
 from qgis.PyQt.QtCore import pyqtSignal
 
-from planesight.core.aggregate import aggregate_terrain
-
 
 class _CanceledError(Exception):
     """Internal: raised from the progress callback to unwind on cancel."""
@@ -40,6 +38,9 @@ class AggregateTask(QgsTask):
             self.message.emit(msg)
 
         try:
+            # heavy import (GDAL/numpy/derivatives) - kept off the UI thread
+            from planesight.core.aggregate import aggregate_terrain
+
             self.specs = aggregate_terrain(
                 self._bbox, self._out_dir, include_s2=self._include_s2,
                 progress=_progress,
