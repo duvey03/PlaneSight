@@ -37,6 +37,7 @@ strike/dip en masse from the DEM geometry. Everything to date is a validated,
 | Positive-unlabeled scoring (recall-at-budget) + label-free linearity | `core/detect/score.py`, `linearity.py` | done |
 | Canny operator + vectorize (thin/trace/simplify) + `ClassicalTraceDetector` | `core/detect/` | done |
 | End-to-end auto strike/dip on Nepal | `scripts/detect_attitudes_nepal.py` | done |
+| Data-driven attitude rules (local variability + morphology/length priors) | `core/attitude/variability.py`, `scripts/attitude_rules.py`, `docs/ATTITUDE_RULES.md` | done (`5ug`) |
 | Multi-region detector eval (recall/linearity + dominant strikes) | `scripts/detector_eval.py` | done |
 | Drainage pre-filter (D8 flow accum + classifier) | `core/detect/drainage.py` | **WIP, see issues** |
 
@@ -109,6 +110,23 @@ review-flag not delete, per-trace `(is_drainage, score)`; wired into
    at junctions; no gap-bridging). Apply AFTER drainage removal (now in place).
 2. Run the drainage sweep on **Pakistan/Canada** to confirm the knee transfers now
    that the algorithm is hardened (only validated on Nepal so far).
+
+**Attitude rules (`5ug`) DONE - measured thresholds now available for the blocked
+downstream pieces** (`docs/ATTITUDE_RULES.md`, driver `scripts/attitude_rules.py`,
+pure helpers `core/attitude/variability.py`):
+- **`planesight-gas`** (skeptic) - implausible-local-outlier bar: **strike Δ > 60°**
+  / **dip Δ > 35°** (pooled p95 at the **1 km** window; aggressive variant p90 =
+  40°/27°). Apply at ≥1 km scale and as *review*, not deletion - the tail mixes real
+  folds/cross-cutting with bad fits.
+- **`planesight-61f`** (refined drainage rule) - **confidence gate = `conditioning ≥
+  1e-3` AND `map_conditioning ≥ 1e-3` AND relief ≥ ~80 m (≈40·σ_z)**, NOT a length
+  threshold. Relief drives dip-uncertainty down monotonically in all three regions
+  (≤0.5° median, ≤1.5° p90 by 80 m); length is a *misleading* proxy - in low-relief
+  Pakistan reliability FALLS with length (conditioning-pass 90%→28%) because long
+  traces run contour-parallel / along drainage. Length is a weak secondary prior only.
+- Ground-truth N is healthy (354/556/541 reliable attitudes); morphology is
+  V-dominant (56-72%), near-vertical `straight` rare (<3%). The binding small-N is
+  neighbour coverage at small radii (250 m: 6/17/1 per region) - trust only ≥1 km.
 
 **Parallel / later:** infra remnants - `bcn` (S2 cloud compositing), `gj9` (per-AOI
 CRS policy), `1dg` (unified training GeoPackage), `85g` (correlated-error
