@@ -1,6 +1,6 @@
 # PlaneSight - Session Handoff
 
-**Updated:** 2026-06-24 (+ Pakistan/Canada drainage transferability sweep, `amn`).
+**Updated:** 2026-06-25. NEXT PHASE: the QGIS plugin GUI (see end).
 
 PlaneSight = a QGIS plugin that, for any AOI, aggregates global DEM (Copernicus
 GLO-30) + Sentinel-2, auto-detects geological bedding/contact traces, and computes
@@ -14,19 +14,23 @@ data-driven thresholds.
 
 ## TL;DR state
 
-- **Phases 0-2 are on `main`** (PRs #1, #2): data fetch, derivative engine, plane-fit
-  strike/dip, classical detector, scoring.
-- **The integration branch `feat/drainage-filter`** (this body of work, **ready to PR
-  to main**) adds, on top of that:
-  1. the **complete drainage arc** - flow-accumulation filter, verified + hardened +
-     integrated as a review-flag, then refined to an overlap-flag + confidence-ranked
-     review queue (`3em` epic CLOSED);
-  2. **three parallel-lane improvements** - data-driven attitude rules (`5ug`),
-     continuity/edge-linking (`zod`), a correlated-error uncertainty floor (`85g`);
-  3. **process tooling** - verification hooks, a parallelization kit, and an
-     adversarial skeptic verifier.
-- **195 pure tests green; ruff clean.** Headless GDAL via micromamba env `gdal`:
+- **All science work is now MERGED to `main`** (PRs #1-#5). The headless core is
+  complete and validated end-to-end; the **QGIS GUI is the next phase and is NOT yet
+  built**. Merged this cycle on top of Phases 0-2:
+  1. the **complete + BOUNDED drainage arc** - flow-accumulation filter, verified +
+     hardened + integrated as a review-flag, refined to overlap-flag + confidence-rank
+     (`3em` CLOSED); then *generalized*: transfers to Canada, **fails on low-relief
+     Pakistan** (sweep `amn`), and the spectral fallback was **probed + falsified**
+     (`0bf`). Net: works in steep/dissected terrain; low-relief has no auto drainage
+     filter but **degrades gracefully** (review-flag + gates). See "Strategic landing".
+  2. **three improvements** - data-driven attitude rules (`5ug`), continuity linking
+     (`zod`), a correlated-error uncertainty floor (`85g`);
+  3. **process tooling** - verification hooks, a parallelization kit, an adversarial
+     skeptic verifier. The parallel worktree workflow was proven on **5 lanes**
+     (`5ug`/`zod`/`85g`/`amn`/`0bf`), each independently adversarially verified.
+- **~195 pure tests green; ruff clean.** Headless GDAL via micromamba env `gdal`:
   `MAMBA_ROOT_PREFIX=$HOME/micromamba PYTHONPATH=$PWD $HOME/bin/micromamba run -n gdal python ...`
+- **Working tree is on `main`; no open worktrees.** Start the GUI from a fresh branch.
 
 ---
 
@@ -109,6 +113,30 @@ traces **creeks**, not just contacts. The fix and its validation:
 
 ---
 
+## Strategic landing: low-relief drainage (BOUNDED, negative result)
+
+The drainage filter was chased to its terrain boundary and the boundary is now *measured*:
+
+- **Detection** works everywhere (DEM-curvature is the strongest signal in all regions,
+  including Pakistan - Phase 1; the "Pakistan is spectral-dominated" idea was a coverage
+  artifact, debunked in Phase 1 and mistakenly revived then re-corrected this cycle).
+- **Drainage exclusion works in steep/dissected terrain** (Nepal/Canada). On **low-relief
+  arid terrain it has NO working auto-method**: flow-accumulation over-connects (blobs to
+  33% of the map, no knee - `amn`), and the **spectral NDMI fallback was falsified** on the
+  real per-trace use case (`0bf`: AUC collapses 0.94->0.64; the 0.94 was a pixel-proxy AND
+  a **coastal-water artifact** - the Makran-coast AOI's high-NDMI "creeks" are shoreline,
+  not riparian moisture). The moisture idea is *unproven, not disproven* - a clean test
+  needs a **non-coastal arid AOI**.
+- **But it degrades gracefully:** the filter is a review-FLAG, so low-relief is
+  *unfiltered-but-safe* (the conditioning + `map_conditioning` + `5ug` smoothness gates
+  still apply). Pragmatic stance: **rely on the gates + defer low-relief** ("defensible
+  terrains first"), now measured rather than assumed.
+- **Lesson, reinforced:** two confident from-memory/headline claims this cycle ("spectral-
+  dominated", "NDMI works in arid 0.94") were both wrong and both caught by the
+  validate-before-build gate. Keep gating empirical claims.
+
+---
+
 ## Open follow-ups
 
 - **`pie`** - tune `link_polylines`: under-links at defaults on real Nepal (60/3740
@@ -138,8 +166,28 @@ traces **creeks**, not just contacts. The fix and its validation:
   per-trace **elevation monotonicity** (the `4l8` signal) on Pakistan; NDWI water-mask first.
 - **Infra:** `bcn` (S2 cloud compositing), `gj9` (per-AOI CRS), `1dg` (training
   GeoPackage). Deferred: `luj` (shield AOI), `eu3` (bootstrap confirmation).
-- **The big phase: QGIS plugin GUI** - QgsTask run, styled layers, the human
-  review/triage gate. The path to a usable tool.
+- (Infra above is optional polish; the next real phase is the GUI - see below.)
+
+---
+
+## NEXT PHASE: QGIS plugin GUI (start here)
+
+The headless core is complete and validated; the GUI turns it into a usable tool. Scope
+to design at kickoff (read `ARCHITECTURE.md` S5/S11; `planesight/` already has the Phase-0
+plugin skeleton - classFactory/metadata.txt + a QgsTask harness):
+- **Run flow:** draw/select an AOI -> a QgsTask runs the headless pipeline (fetch ->
+  derivatives -> detect -> drainage-flag -> link -> strike/dip) off the UI thread, with
+  progress + cancel.
+- **Layers:** styled outputs - detected traces (kept vs drainage-flagged), strike/dip
+  symbols (qgSurf-style markers already prototyped in `scripts/qgis_style_attitudes.py` /
+  `debug/nepal_attitudes.qml`), and the confidence-ranked review queue.
+- **The human review/triage gate** - the whole review-flag design exists for this:
+  surface drainage-flagged + low-confidence traces for accept/reject and persist the
+  decision.
+- **First checkpoint:** `scripts/qgis_console_checkpoint.py` (paste into the QGIS Python
+  console) already exists - validate the core runs inside QGIS before building UI.
+- Decisions to make: dockwidget vs processing-provider; per-AOI CRS (`gj9`); review-state
+  persistence.
 
 ## Beads map
 

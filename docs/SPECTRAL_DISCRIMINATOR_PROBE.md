@@ -1,5 +1,15 @@
 # Spectral creek-vs-contact discriminator probe (planesight-l2c, option A)
 
+> **CORRECTION / SUPERSEDED (see `docs/SPECTRAL_VALIDATE.md`, planesight-0bf).** This
+> probe's headline AUC **0.94 was inflated by two confounds** and does NOT survive
+> validation: (1) a **pixel proxy** - per-trace mean-NDMI over detected traces collapses
+> to AUC ~0.64; (2) the Pakistan AOI is the **Makran coast** (Gwadar), so the high-NDMI
+> "creek" pixels are partly **open-water shoreline**, not riparian moisture. The
+> "complementary-regimes / NDMI-works-in-arid" conclusion below is therefore **NOT
+> established** - the moisture hypothesis is unproven (a clean test needs a non-coastal
+> arid AOI), and the per-trace discriminator does not work. Read this probe as the
+> cautionary first half; `SPECTRAL_VALIDATE.md` is the verdict.
+
 **Question.** The flow-accumulation drainage FILTER fails on low-relief arid Pakistan.
 Can Sentinel-2 discriminate creek-from-contact there (its correct *secondary* use -
 DEM-curvature is the strongest *detector* everywhere, Phase 1)?
