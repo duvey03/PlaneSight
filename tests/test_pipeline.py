@@ -7,7 +7,12 @@ consistent, and degenerate input doesn't crash. Pure numpy - no GDAL/QGIS.
 
 import numpy as np
 
-from planesight.core.pipeline import AttitudePoint, PipelineResult, detect_attitudes
+from planesight.core.pipeline import (
+    AttitudePoint,
+    PipelineResult,
+    detect_attitudes,
+    fit_traces,
+)
 
 # A standard north-up geotransform (origin, +x res, 0, origin, 0, -y res).
 GT = (500000.0, 30.0, 0.0, 3000000.0, 0.0, -30.0)
@@ -62,3 +67,34 @@ def test_pipeline_handles_nodata_nan():
     assert isinstance(res, PipelineResult)
     for ap in res.attitudes:
         assert np.isfinite(ap.x) and np.isfinite(ap.y)
+
+
+# --- fit_traces (M2: strike/dip on supplied traces) ---
+
+GT10 = (0.0, 10.0, 0.0, 0.0, 0.0, -10.0)   # origin 0,0; 10 m pixels; north-up
+
+
+def _east_dipping_dem(dip_deg=15.0, res=10.0, h=60, w=60):
+    """A planar surface dipping due East at a known angle (elevation falls with +x)."""
+    g = np.tan(np.radians(dip_deg))
+    _, cc = np.indices((h, w))
+    return -g * (cc * res)
+
+
+def test_fit_traces_recovers_known_dip_and_direction():
+    # an L-shaped trace (spans x AND y) on a 15 deg East-dipping plane: the fit must
+    # recover dip 15, dip_direction 090 exactly (DEM sampling is exact on a linear field).
+    dem = _east_dipping_dem(15.0)
+    trace = np.array([[50.0, -50.0], [400.0, -50.0], [400.0, -400.0]])
+    atts = fit_traces([trace], dem, GT10, res=10.0)
+    assert len(atts) == 1
+    a = atts[0].attitude
+    assert abs(a.dip - 15.0) < 0.5
+    assert abs(((a.dip_direction - 90.0 + 180) % 360) - 180) < 1.5
+    assert atts[0].reliable is True
+
+
+def test_fit_traces_skips_empty_and_too_short():
+    dem = _east_dipping_dem()
+    assert fit_traces([], dem, GT10, res=10.0) == []
+    assert fit_traces([np.array([[10.0, -10.0]])], dem, GT10, res=10.0) == []
