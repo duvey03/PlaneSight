@@ -125,6 +125,17 @@ traces **creeks**, not just contacts. The fix and its validation:
   panels under `debug/drainage_{test,verify,residual}/{pakistan,canada}/`. Follow-up
   `planesight-l2c`: replace fixed `accum` with a density-targeting rule (or a different
   low-relief channel definition) in `core/detect/drainage.py`.
+- **Spectral NDMI validation gate (`planesight-0bf`, DONE — NEGATIVE result):** the probe's
+  NDMI AUC 0.94 was a **proxy artifact** (channel *pixels* vs hand *contacts*). On the REAL
+  use case — per-trace mean-NDMI over DETECTED Pakistan traces — separation **collapses to
+  AUC 0.64** (creek-proxy vs hand contacts) / **0.58** vs off-channel detected. At the best
+  threshold (NDMI ≥ −0.165) it catches only 34% of creek-proxy traces, flags 30% of the map,
+  and its high-NDMI end is **coastal water shorelines, not creeks** (Makran AOI). Its
+  apparently-low contact-FN (5% on at-risk vs the flow filter's 45%) is a *near-chance*
+  artifact, not discrimination. **Verdict: per-trace NDMI does NOT hold — do not build the
+  l2c/option-A terrain-adaptive selector on it.** Details + panels: `docs/SPECTRAL_VALIDATE.md`,
+  `scripts/spectral_validate.py`, `debug/spectral_validate/pakistan/`. Next probe to try:
+  per-trace **elevation monotonicity** (the `4l8` signal) on Pakistan; NDWI water-mask first.
 - **Infra:** `bcn` (S2 cloud compositing), `gj9` (per-AOI CRS), `1dg` (training
   GeoPackage). Deferred: `luj` (shield AOI), `eu3` (bootstrap confirmation).
 - **The big phase: QGIS plugin GUI** - QgsTask run, styled layers, the human
