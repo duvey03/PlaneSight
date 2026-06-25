@@ -14,6 +14,7 @@ from planesight.core.detect.drainage import (
     flow_network,
     is_drainage,
     trace_drainage_fraction,
+    trace_elevation_monotonicity,
 )
 
 
@@ -187,29 +188,58 @@ def test_block_mean_preserves_narrow_channel_that_stride_skips():
     assert block_mean(dem, 3)[0, 1] < 10.0           # block-mean keeps the signal
 
 
-# --- xx2 integration: standalone drainage review-flag ---
+# --- 61f: overlap-based flag + monotonicity/length confidence rank ---
 
 
-def test_flag_drainage_flags_along_keeps_crossing():
-    # steep V-valley draining south down col cx: a trace along the axis is drainage,
-    # one crossing it is not. flag_drainage builds the flow network itself.
-    h, w, cx = 40, 15, 7
+def test_trace_elevation_monotonicity_descent_vs_v():
+    h, w, cx = 30, 21, 10
+    rr, cc = np.indices((h, w))
+    tilt = (h - 1 - rr).astype(float)            # z decreases south -> monotonic
+    descent = np.array([[5, 2], [5, 27]], dtype=float)
+    assert trace_elevation_monotonicity(descent, tilt) > 0.9
+    valley = np.abs(cc - cx).astype(float)       # z is a V across the axis
+    vtrace = np.array([[2, 15], [18, 15]], dtype=float)
+    assert trace_elevation_monotonicity(vtrace, valley) < 0.2
+
+
+def test_flag_drainage_overlap_flags_on_channel_not_crossing():
+    # overlap-based (sinuosity-robust): a trace embedded in the channel is flagged;
+    # one that only crosses it (low overlap) is kept.
+    h, w, cx = 44, 31, 15
     rr, cc = np.indices((h, w))
     dem = np.abs(cc - cx) * 3.0 + (h - 1 - rr) * 0.5
-    along = np.array([[cx, 6], [cx, 36]], dtype=float)     # (col,row) down the axis
-    crossing = np.array([[1, 20], [13, 20]], dtype=float)  # across the valley
-    labels = flag_drainage([along, crossing], dem, downsample=1, min_accum_cells=8)
-    assert labels[0][0] is True            # along-flow -> drainage
-    assert labels[1][0] is False           # crossing -> kept
-    assert labels[0][1] > labels[1][1]     # along scores more creek-like (rank score)
+    along = np.array([[cx, 10], [cx, 42]], dtype=float)    # down the axis (high overlap)
+    crossing = np.array([[1, 22], [29, 22]], dtype=float)  # across it (low overlap)
+    flags = flag_drainage([along, crossing], dem, downsample=1, min_accum_cells=20)
+    assert flags[0].is_drainage is True
+    assert flags[1].is_drainage is False
+    assert flags[0].overlap > flags[1].overlap
+
+
+def test_flag_drainage_rank_prioritises_long_crosscutter():
+    # rank = length * (1 - monotonicity): a long V-crossing trace (rescue candidate)
+    # outranks a short creek-like descent, and the rank matches the formula.
+    h, w, cx = 40, 21, 10
+    rr, cc = np.indices((h, w))
+    dem = np.abs(cc - cx) * 1.0 + (h - 1 - rr) * 0.3
+    long_v = np.array([[1, 20], [19, 20]], dtype=float)        # long, V across valley
+    short_creek = np.array([[cx, 30], [cx, 36]], dtype=float)  # short, down the axis
+    flags = flag_drainage([long_v, short_creek], dem, downsample=1, min_accum_cells=5)
+    assert flags[0].rank > flags[1].rank
+    for f in flags:
+        m = 1.0 if not np.isfinite(f.monotonicity) else f.monotonicity
+        assert abs(f.rank - f.length * (1.0 - m)) < 1e-9
 
 
 def test_flag_drainage_preserves_every_trace():
-    # review-flag, not a filter: one label per input, nothing dropped.
+    # review-flag, not a filter: one DrainageFlag per input, nothing dropped.
     dem = _tilted_south(20, 10)
     traces = [np.array([[1, 1], [1, 8]], dtype=float),
               np.array([[3, 3], [7, 3]], dtype=float),
               np.array([[5, 5], [5, 9]], dtype=float)]
-    labels = flag_drainage(traces, dem, downsample=1, min_accum_cells=5)
-    assert len(labels) == len(traces)
-    assert all(isinstance(d, bool) and 0.0 <= s <= 1.0 for d, s in labels)
+    flags = flag_drainage(traces, dem, downsample=1, min_accum_cells=5)
+    assert len(flags) == len(traces)
+    for f in flags:
+        assert isinstance(f.is_drainage, bool)
+        assert 0.0 <= f.overlap <= 1.0
+        assert f.length >= 0.0

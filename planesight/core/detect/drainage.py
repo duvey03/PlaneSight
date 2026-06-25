@@ -21,6 +21,7 @@ channel that a stride grid would step over still lowers its block and survives.
 from __future__ import annotations
 
 import heapq
+from collections import namedtuple
 
 import numpy as np
 from scipy.ndimage import binary_dilation, distance_transform_edt
@@ -39,6 +40,8 @@ __all__ = [
     "channel_proximity",
     "trace_drainage_fraction",
     "is_drainage",
+    "trace_elevation_monotonicity",
+    "DrainageFlag",
     "flag_drainage",
 ]
 
@@ -276,32 +279,77 @@ def is_drainage(poly_xy, channel_buffer, nearest_flow_az,
     return aligned >= min_aligned_fraction
 
 
+def trace_elevation_monotonicity(poly_xy, dem):
+    """|net elevation change| / total variation along a trace, in [0, 1].
+
+    1.0 = monotonic descent (a creek following the thalweg); ~0 = a V in elevation
+    (a contact crossing a valley, down-then-up). Unlike flow-azimuth alignment this is
+    sinuosity-robust - it cares only about elevation, so a meandering creek still reads
+    ~1. NaN if fewer than 3 finite samples. ``poly_xy`` is (n, 2) pixel ``(col, row)``.
+    """
+    pts = np.asarray(poly_xy, dtype=float)
+    if pts.shape[0] < 2:
+        return float("nan")
+    d = densify_line(pts, spacing=1.0)
+    rows = np.clip(np.round(d[:, 1]).astype(int), 0, dem.shape[0] - 1)
+    cols = np.clip(np.round(d[:, 0]).astype(int), 0, dem.shape[1] - 1)
+    z = np.asarray(dem)[rows, cols]
+    z = z[np.isfinite(z)]
+    if z.size < 3:
+        return float("nan")
+    tv = float(np.sum(np.abs(np.diff(z))))
+    if tv <= 0.0:
+        return 1.0
+    return float(abs(z[-1] - z[0]) / tv)
+
+
+def _trace_length(poly_xy):
+    """Densified map-view length of a trace (same units as its vertices)."""
+    d = densify_line(np.asarray(poly_xy, dtype=float), spacing=1.0)
+    return float(np.sum(np.hypot(*np.diff(d, axis=0).T))) if len(d) > 1 else 0.0
+
+
+#: Per-trace drainage result. ``rank`` is the review-queue priority (higher = more
+#: likely a real contact wrongly flagged, so rescue first).
+DrainageFlag = namedtuple("DrainageFlag",
+                          "is_drainage overlap monotonicity length rank")
+
+
 def flag_drainage(traces, dem, *, downsample: int = 3, min_accum_cells: int = 15,
-                  buffer_px: int = 2, min_aligned_fraction: float = 0.5,
-                  angle_tol_deg: float = 30.0, valid_mask=None):
-    """Classify each detected trace as drainage (runs along a channel) or not.
+                  buffer_px: int = 2, min_overlap_fraction: float = 0.5,
+                  valid_mask=None):
+    """Flag traces embedded in the drainage network and score each for review ranking.
 
-    The standalone post-detection step the pipeline calls AFTER any detector - the
-    detector stays terrain-agnostic (band-in, polylines-out) and swappable, while this
-    builds the hardened flow network once and scores every trace against it.
+    Refined rule (planesight-61f, from the planesight-4l8 investigation + geologist
+    verdict). The FLAG decision is **overlap-based**, not flow-alignment: a trace whose
+    length sits on the channel buffer for >= ``min_overlap_fraction`` is flagged.
+    Overlap is **sinuosity-robust** - the old along-flow alignment let meandering creeks
+    narrowly escape (they scored ~0.45 aligned), and the geologist judged the whole
+    on-channel band almost entirely untrustworthy ("fine excluding all of these"), so
+    we flag it aggressively.
 
-    This is a review-FLAG, not a filter: NO trace is dropped. Returns a list aligned
-    with ``traces`` of ``(is_drainage: bool, aligned_fraction: float)``. The
-    ``aligned_fraction`` (0..1, how much of the trace runs along the flow) doubles as
-    the review-queue ranking score - rank flagged traces by it (most creek-like first).
+    This is a review-FLAG, not a delete: NO trace is dropped. Each flagged trace is
+    scored for a confidence-ranked review queue so the rare genuine contact can be
+    rescued: a LONG, clearly CROSS-CUTTING trace (low elevation-monotonicity = a V that
+    crosses the valley, not a creek that descends it) gets the highest ``rank``; small,
+    creek-like (high-monotonicity) traces sink to the bottom.
+
+    Convexity was tested as a discriminator (planesight-4l8) and FAILS even as an
+    aggregate; do not re-add it.
+
+    CONTRACT: apply this, then run continuity linking (``vectorize.link_polylines``) on
+    the KEPT set only - linking before drainage removal reconnects creeks.
 
     Args:
-        traces: detector output as (n, 2) pixel ``(col, row)`` vertex arrays - i.e.
-            ``detect(stack, transform=None)``; world coords cannot index the grid.
+        traces: detector output as (n, 2) pixel ``(col, row)`` arrays
+            (``detect(stack, transform=None)``; world coords cannot index the grid).
         dem: 2D elevation array on the SAME grid the traces were detected on.
-        downsample, min_accum_cells, buffer_px, min_aligned_fraction, angle_tol_deg:
-            flow + alignment parameters. Defaults are the Nepal-calibrated operating
-            point (planesight-5p3 verification + j8t hardening: filled network, 31%
-            removal on the flat part of the false-negative curve).
+        downsample, min_accum_cells, buffer_px: hardened flow-network parameters
+            (j8t). min_overlap_fraction: flag cut on channel-buffer overlap.
         valid_mask: optional finite-DEM mask AND-ed with the channel network.
 
     Returns:
-        ``list[tuple[bool, float]]`` - one ``(is_drainage, score)`` per input trace.
+        ``list[DrainageFlag]`` aligned with ``traces``.
     """
     acc, az = flow_network(dem, downsample=downsample, fill=True)
     channel = acc >= float(min_accum_cells)
@@ -310,7 +358,11 @@ def flag_drainage(traces, dem, *, downsample: int = 3, min_accum_cells: int = 15
     buf, near = channel_proximity(channel, az, buffer_px=buffer_px)
     out = []
     for poly in traces:
-        _, aligned = trace_drainage_fraction(poly, buf, near,
-                                             angle_tol_deg=angle_tol_deg)
-        out.append((bool(aligned >= min_aligned_fraction), float(aligned)))
+        overlap, _ = trace_drainage_fraction(poly, buf, near)
+        mono = trace_elevation_monotonicity(poly, dem)
+        length = _trace_length(poly)
+        mono_rank = 1.0 if not np.isfinite(mono) else mono  # unknown -> treat as creek
+        rank = length * (1.0 - mono_rank)
+        out.append(DrainageFlag(bool(overlap >= min_overlap_fraction),
+                                float(overlap), float(mono), float(length), float(rank)))
     return out
