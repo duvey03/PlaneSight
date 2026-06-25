@@ -203,10 +203,15 @@ Per-AOI UTM CRS from AOI centroid (`gj9`); re-detect default = preserve/merge ed
 - **M2** `o9m` - strike/dip on supplied traces. **DONE** (commit 921c274; PR pending). Strike/Dip
   tab: any trace layer + DEM -> `fit_traces` -> qgSurf SVG attitude markers. Decoupled from
   detection. `core.pipeline` made scipy-free (lazy detection imports) - this fixed a UI freeze.
-- **M3** `8et`(math done, PR #7) - structural analysis panel. **NEXT** - wire a new "Analyze" tab
-  to the merged `core/structural/stereonet.py`: plot selected attitudes -> Fisher mean + fold
-  axis -> map<->stereonet selection linkage. Rendering decision (matplotlib vs QPainter) here.
+- **M3** `8et`(math)/`7fx`(panel) - structural analysis panel. **DONE** (commit ccdab0f).
+  "Analyze" tab: `StereonetWidget` (pure-QPainter equal-area stereonet, NOT matplotlib -
+  no heavy import) plots poles + axial mean + best-fit girdle + fold axis (beta);
+  bidirectional map<->stereonet linkage via QGIS feature selection as shared state (net
+  freehand lasso -> selectByIds; map selectionChanged -> highlight; stats on the active
+  set); "Select attitudes on map" button arms native freehand-select. Headless-verified.
 - **M4** `oey` - detection + review/triage gate (first scipy user; lazy + off-thread).
+  **Hold for the detection-scrutiny/ML spike** (a separate session is assessing whether ML
+  should replace/augment the classical detector before M4 commits to the review-gate design).
 - **PROBE** `ayn` - example-driven generalization research gate (ready anytime; gates M5).
 - **M5** `xyy` - example-driven detection. **M6** `2pv` - persistence + export + project-state.
 
