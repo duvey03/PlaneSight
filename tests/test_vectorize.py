@@ -3,7 +3,9 @@
 import numpy as np
 
 from planesight.core.detect import (
+    close_gaps,
     extract_polylines,
+    link_polylines,
     pixels_to_world,
     simplify,
     thin,
@@ -98,3 +100,82 @@ def test_extract_polylines_world_coords_when_transform_given():
     # row 10 -> world y = 8000 + (10.5)*(-30) = 7685
     main = max(pls, key=lambda t: np.ptp(t[:, 0]))  # widest x-extent
     assert np.allclose(main[:, 1], 7685.0)
+
+
+# --- link_polylines: the four continuity risk cases ------------------------
+# Polylines are (row, col) here; link_polylines is coordinate-agnostic. Defaults
+# are max_gap_px=5.0, max_angle_deg=20.0 unless a test overrides them.
+
+
+def test_link_colinear_gap_fragments_merge():
+    # Two horizontal fragments on the same row, separated by a 3px gap.
+    a = np.array([(0, 0), (0, 10)], dtype=float)
+    b = np.array([(0, 13), (0, 23)], dtype=float)
+    out = link_polylines([a, b])
+    assert len(out) == 1  # bridged into a single trace
+    merged = out[0]
+    # spans the full extent end to end (col 0 .. 23)
+    assert merged[:, 1].min() == 0 and merged[:, 1].max() == 23
+    assert np.all(merged[:, 0] == 0)  # stayed on the row
+
+
+def test_link_undirected_orientation_mod180():
+    # a ends heading +col, b's near endpoint heads -col: raw tangents are 180deg
+    # apart but the SAME line (mod 180) -> must still link.
+    a = np.array([(0, 0), (0, 10)], dtype=float)
+    b = np.array([(0, 23), (0, 13)], dtype=float)  # ordered so near end is b[-1]
+    out = link_polylines([a, b])
+    assert len(out) == 1
+
+
+def test_link_parallel_offset_layers_do_not_merge():
+    # Adjacent bedding layers: parallel (both horizontal) but offset by 3 rows.
+    # Tangents are collinear, so the tangent-only check would wrongly merge;
+    # the gap vector (3 rows, 2 cols ~= 56deg) runs ACROSS the layers and fails
+    # the gap-collinearity guard.
+    a = np.array([(0, 0), (0, 10)], dtype=float)
+    b = np.array([(3, 12), (3, 22)], dtype=float)
+    out = link_polylines([a, b])
+    assert len(out) == 2  # stayed separate
+
+
+def test_link_over_large_gap_does_not_merge():
+    # Perfectly colinear but the gap (10px) exceeds max_gap_px (5).
+    a = np.array([(0, 0), (0, 10)], dtype=float)
+    b = np.array([(0, 20), (0, 30)], dtype=float)
+    out = link_polylines([a, b], max_gap_px=5.0)
+    assert len(out) == 2
+
+
+def test_link_junction_angle_mismatch_does_not_merge():
+    # Endpoints are 1.4px apart (a true junction) but b heads perpendicular to a.
+    a = np.array([(0, 0), (0, 10)], dtype=float)       # horizontal
+    b = np.array([(1, 11), (8, 11)], dtype=float)      # near-vertical
+    out = link_polylines([a, b])
+    assert len(out) == 2  # junction, not a continuation
+
+
+def test_link_chains_more_than_two_fragments():
+    # Three colinear fragments with small gaps collapse to one.
+    a = np.array([(0, 0), (0, 8)], dtype=float)
+    b = np.array([(0, 11), (0, 19)], dtype=float)
+    c = np.array([(0, 22), (0, 30)], dtype=float)
+    out = link_polylines([a, b, c])
+    assert len(out) == 1
+    assert out[0][:, 1].max() == 30
+
+
+def test_link_passes_through_short_and_empty():
+    assert link_polylines([]) == []
+    nub = np.array([(5, 5)], dtype=float)  # single vertex, no orientation
+    out = link_polylines([nub])
+    assert len(out) == 1
+
+
+def test_close_gaps_bridges_small_break():
+    line = np.zeros((9, 20), dtype=bool)
+    line[4, 2:9] = True
+    line[4, 11:18] = True  # a 2px break at cols 9,10
+    bridged = close_gaps(line, size=1)
+    assert bridged[4, 9] and bridged[4, 10]  # gap closed
+    assert bridged[4, 2:18].all()

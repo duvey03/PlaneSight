@@ -28,6 +28,8 @@ __all__ = [
     "pixels_to_world",
     "polylines_from_mask",
     "extract_polylines",
+    "link_polylines",
+    "close_gaps",
 ]
 
 
@@ -207,3 +209,166 @@ def extract_polylines(response, budget: float = 0.05, valid_mask=None,
     det = detect_at_budget(response, budget, valid_mask=valid_mask)
     return polylines_from_mask(det, min_length=min_length,
                                simplify_tol=simplify_tol, transform=transform)
+
+
+# --- continuity / endpoint linking -----------------------------------------
+#
+# Detected traces come out MORE fragmented than a geologist's continuous
+# interpretation: hysteresis breaks the response at sub-threshold dips,
+# ``trace_skeleton`` splits every junction, and nothing bridges gaps. A single
+# real contact therefore arrives as several short colinear pieces, which also
+# hurts downstream size-filtering (genuine contacts get discarded as "too
+# small"). ``link_polylines`` rejoins fragments that are geometrically a single
+# trace; ``close_gaps`` optionally pre-bridges 1-2px raster gaps before ``thin``.
+
+_LINK_EPS = 1e-9
+
+
+def _orientation_deg(vec):
+    """Undirected orientation of a 2D vector, in degrees on [0, 180).
+
+    Strike-like geometry has no head/tail (D-P direction is meaningless for a
+    contact), so orientation is taken mod 180: a vector and its reverse are the
+    same line. Returns 0.0 for a (near-)zero vector.
+    """
+    if abs(vec[0]) < _LINK_EPS and abs(vec[1]) < _LINK_EPS:
+        return 0.0
+    return float(np.degrees(np.arctan2(vec[0], vec[1])) % 180.0)
+
+
+def _acute_diff_deg(a, b):
+    """Smallest angle between two undirected orientations (both mod 180)."""
+    d = abs(a - b) % 180.0
+    return min(d, 180.0 - d)
+
+
+def _end_tangent(poly, at_start, n_tangent):
+    """Outward-pointing local direction at one end of a polyline.
+
+    Uses up to ``n_tangent`` vertices in from the end, so the orientation is the
+    *local* end heading (preserves curved continuations) rather than the full
+    chord. Points away from the body of the polyline (into the gap).
+    """
+    n = len(poly)
+    step = min(n_tangent, n - 1)
+    if at_start:
+        return poly[0] - poly[step]
+    return poly[-1] - poly[-1 - step]
+
+
+def link_polylines(polylines, max_gap_px: float = 5.0,
+                   max_angle_deg: float = 20.0, n_tangent: int = 4):
+    """Rejoin fragmented polylines into longer, continuous traces (pure numpy).
+
+    Two polylines are merged when an endpoint of one lies within ``max_gap_px``
+    of an endpoint of the other AND the join is a genuine *continuation* rather
+    than a junction or a parallel neighbour. Continuation requires three
+    undirected (mod-180) collinearity checks to all hold within
+    ``max_angle_deg``:
+
+      1. the two local end-tangents are collinear with each other, and
+      2. & 3. the gap (endpoint-to-endpoint) vector is collinear with *each*
+         end-tangent -- i.e. the gap continues the trace's line.
+
+    Check (1) alone is NOT enough: two parallel-but-offset fragments (adjacent
+    bedding layers) have collinear tangents and would wrongly merge. The gap-
+    vector checks (2,3) are the guard -- for offset layers the connecting vector
+    runs across the layers, not along them, so it fails collinearity and the
+    layers stay separate. Endpoints close but with divergent tangents (a true
+    junction) fail check (1).
+
+    Orientation is **undirected** (mod 180): a fragment ending heading 5 deg
+    continues one heading 178 deg. We never average raw angles -- only acute
+    differences are compared (see ``_acute_diff_deg``).
+
+    Merging iterates: a freshly merged polyline can chain with further
+    fragments, so >2 colinear pieces collapse into one. Greedy by gap (shortest
+    eligible gap wins) for determinism.
+
+    APPLY-AFTER-DRAINAGE CONTRACT: run this only AFTER drainage traces have been
+    removed/flagged. Linking before drainage removal reconnects creek fragments
+    into long false lineaments. Pipeline integration (the post-drainage step)
+    belongs to ``planesight-61f``; this is the primitive only.
+
+    Coordinate-agnostic: operates on whatever space the inputs are in (pixel
+    ``(col, row)`` or world ``(x, y)``); ``max_gap_px`` is in those units.
+    Polylines with fewer than 2 vertices (no definable orientation) are passed
+    through unchanged. Returns a new list of ``(n, 2)`` float arrays.
+
+    Note: O(n^2) endpoint comparisons per pass over n polylines. Fine for the
+    per-tile fragment counts seen in practice; for very large n a spatial index
+    on endpoints would be the optimisation.
+    """
+    polys = [np.asarray(p, dtype=float) for p in polylines if len(p) >= 2]
+    passthrough = [np.asarray(p, dtype=float) for p in polylines if len(p) < 2]
+
+    changed = True
+    while changed:
+        changed = False
+        # Collect every eligible endpoint-to-endpoint join this pass.
+        candidates = []  # (gap, i, j, a_start, b_start)
+        for i in range(len(polys)):
+            for a_start in (True, False):
+                pa = polys[i][0] if a_start else polys[i][-1]
+                ta = _orientation_deg(_end_tangent(polys[i], a_start, n_tangent))
+                for j in range(i + 1, len(polys)):
+                    for b_start in (True, False):
+                        pb = polys[j][0] if b_start else polys[j][-1]
+                        jvec = pb - pa
+                        gap = float(np.hypot(jvec[0], jvec[1]))
+                        if gap > max_gap_px:
+                            continue
+                        tb = _orientation_deg(
+                            _end_tangent(polys[j], b_start, n_tangent))
+                        if _acute_diff_deg(ta, tb) > max_angle_deg:
+                            continue
+                        # Gap-vector collinearity guard (skip when endpoints
+                        # coincide: no meaningful gap direction).
+                        if gap > _LINK_EPS:
+                            jo = _orientation_deg(jvec)
+                            if (_acute_diff_deg(ta, jo) > max_angle_deg or
+                                    _acute_diff_deg(tb, jo) > max_angle_deg):
+                                continue
+                        candidates.append((gap, i, j, a_start, b_start))
+
+        # Apply greedily, shortest gap first; each polyline merges at most once
+        # per pass (a re-scan next pass lets the merged trace chain further).
+        candidates.sort(key=lambda c: c[0])
+        merged_flag = [False] * len(polys)
+        result = []
+        for gap, i, j, a_start, b_start in candidates:
+            if merged_flag[i] or merged_flag[j]:
+                continue
+            A, B = polys[i], polys[j]
+            left = A[::-1] if a_start else A      # connecting end of A -> tail
+            right = B if b_start else B[::-1]     # connecting end of B -> head
+            if gap <= _LINK_EPS:                  # coincident: drop the dup pt
+                right = right[1:]
+            result.append(np.vstack([left, right]))
+            merged_flag[i] = merged_flag[j] = True
+            changed = True
+        for k in range(len(polys)):
+            if not merged_flag[k]:
+                result.append(polys[k])
+        polys = result
+
+    return polys + passthrough
+
+
+def close_gaps(mask, size: int = 1):
+    """Morphologically close 1-2px gaps in a binary mask before thinning.
+
+    Opt-in helper: a small ``scipy.ndimage.binary_closing`` (dilate then erode)
+    bridges sub-threshold pixel breaks in the detection mask so ``thin`` does
+    not split a near-continuous trace. ``size`` is the structuring-element
+    radius (1 -> 3x3, bridges 1-2px gaps; keep small to avoid fusing distinct
+    nearby traces). Returns a boolean mask. Use sparingly and only on already-
+    cleaned (post-drainage) masks; aggressive closing fuses parallel layers.
+    """
+    from scipy import ndimage
+
+    m = np.asarray(mask, dtype=bool)
+    if m.ndim != 2:
+        raise ValueError("mask must be 2D")
+    struct = ndimage.generate_binary_structure(2, 2)
+    return ndimage.binary_closing(m, structure=struct, iterations=int(size))

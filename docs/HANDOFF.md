@@ -104,9 +104,22 @@ review-flag not delete, per-trace `(is_drainage, score)`; wired into
 2178 reliable; dominant strike 82 (Himalayan grain preserved).
 
 **Immediate:**
-1. **`planesight-zod`** - continuity / edge-linking fix. Detections fragment vs the
-   geologist's continuous interpretation (hysteresis breaks; `trace_skeleton` splits
-   at junctions; no gap-bridging). Apply AFTER drainage removal (now in place).
+1. **`planesight-zod` DONE** (branch `feat/continuity`) - continuity primitive landed.
+   `link_polylines(polylines, max_gap_px=5.0, max_angle_deg=20.0)` in
+   `core/detect/vectorize.py`: rejoins fragments when an endpoint is within
+   `max_gap_px` of another endpoint AND the join is a true continuation. Continuation =
+   three undirected (mod-180) collinearity checks within `max_angle_deg`: the two
+   end-tangents collinear with each other, AND the gap vector collinear with *each*
+   tangent. The **gap-vector guard is the key** to NOT merging parallel-offset bedding
+   layers (their tangents are collinear, but the connecting vector runs across the
+   layers, failing the guard). Iterates greedily (shortest gap first) to chain >2
+   fragments. Optional `close_gaps(mask, size)` (scipy `binary_closing`) opt-in bridges
+   1-2px raster gaps before `thin`. Pure numpy/scipy; 8 new risk tests in
+   `tests/test_vectorize.py` (colinear-merge, undirected mod-180, parallel-offset NO
+   merge, over-gap NO merge, junction-angle NO merge, >2 chaining, passthrough,
+   close_gaps). **CONTRACT (not yet wired): apply AFTER drainage removal** - `61f` owns
+   the pipeline step. Caveat: defaults (5px / 20deg) are unvalidated on real Nepal
+   fragments - tune in `61f` against a before/after fragment count.
 2. Run the drainage sweep on **Pakistan/Canada** to confirm the knee transfers now
    that the algorithm is hardened (only validated on Nepal so far).
 
@@ -119,9 +132,10 @@ run, styled layers, human review/triage gate) - the path to a usable tool.
 
 ## Beads map
 
-- Drainage epic **`3em`** (in_progress) -> **`5p3`** + **`j8t`** + **`xx2`** CLOSED;
-  remaining **`zod`** (continuity, next). Epic ready to close once `zod` lands (or
-  defer `zod` and close the epic - it is the last child).
+- Drainage epic **`3em`** (in_progress) -> **`5p3`** + **`j8t`** + **`xx2`** + **`zod`**
+  CLOSED. Epic ready to close (its last child `zod` has landed); `61f` (refined
+  drainage rule + the post-drainage `link_polylines` integration) is the remaining
+  consumer.
 - `lph` (Phase 3 strike/dip engine) in_progress; mostly done in core, `85g` remains.
 - Open infra: `bcn`, `gj9`, `1dg`, `85g`; deferred `luj` (shield data), `eu3`
   (bootstrap confirmation). Phases 0/1/2 epics closed.

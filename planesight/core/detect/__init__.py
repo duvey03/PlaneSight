@@ -25,7 +25,9 @@ from .structure import (
     tensor_response,
 )
 from .vectorize import (
+    close_gaps,
     extract_polylines,
+    link_polylines,
     pixels_to_world,
     polylines_from_mask,
     simplify,
@@ -54,6 +56,8 @@ __all__ = [
     "pixels_to_world",
     "polylines_from_mask",
     "extract_polylines",
+    "link_polylines",
+    "close_gaps",
     "gaussian_gradient",
     "non_max_suppression",
     "hysteresis",
