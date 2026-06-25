@@ -55,15 +55,8 @@ from qgis.PyQt.QtGui import QColor  # noqa: E402
 
 from planesight.core.data import fetch_dem  # noqa: E402
 from planesight.core.detect.vectorize import pixels_to_world  # noqa: E402
+from planesight.core.geo import utm_epsg  # noqa: E402
 from planesight.core.pipeline import detect_attitudes  # noqa: E402
-
-
-def utm_epsg(bbox):
-    """Pick the UTM zone EPSG from the AOI centroid (gj9 will formalize this)."""
-    lon = 0.5 * (bbox[0] + bbox[2])
-    lat = 0.5 * (bbox[1] + bbox[3])
-    zone = int((lon + 180.0) // 6) + 1
-    return (32600 if lat >= 0 else 32700) + zone
 
 
 def _line_feature(fields, poly_px, gt, attrs):
