@@ -13,9 +13,12 @@ import os
 
 from qgis.core import (
     Qgis,
+    QgsCategorizedSymbolRenderer,
+    QgsLineSymbol,
     QgsMarkerSymbol,
     QgsPalLayerSettings,
     QgsProperty,
+    QgsRendererCategory,
     QgsSingleSymbolRenderer,
     QgsSvgMarkerSymbolLayer,
     QgsSymbolLayer,
@@ -42,6 +45,25 @@ def _svg_layer(stroke_width):
         QgsSymbolLayer.PropertyAngle, QgsProperty.fromField("dip_dir")
     )
     return sl
+
+
+_CANDIDATE_COLORS = {
+    "contact": "#2c7fb8",     # kept, high-confidence contacts (blue)
+    "drainage": "#e67e22",    # drainage-flagged review/rescue candidates (orange)
+    "bedding": "#2ca02c",     # human-classified
+    "fault": "#d7301f",
+    "reject": "#b0b0b0",
+}
+
+
+def style_candidates(layer):
+    """Categorize a candidate-trace layer by its ``class`` field (contact/drainage/...)."""
+    cats = []
+    for value, color in _CANDIDATE_COLORS.items():
+        sym = QgsLineSymbol.createSimple({"color": color, "width": "0.5"})
+        cats.append(QgsRendererCategory(value, sym, value))
+    layer.setRenderer(QgsCategorizedSymbolRenderer("class", cats))
+    layer.triggerRepaint()
 
 
 def style_attitudes(layer):

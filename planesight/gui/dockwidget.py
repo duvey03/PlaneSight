@@ -44,8 +44,9 @@ from qgis.PyQt.QtWidgets import (
 
 from ..tasks.aggregate import AggregateTask
 from ..tasks.attitudes import AttitudeTask
+from ..tasks.detect import DetectTask
 from .stereonet_widget import StereonetWidget
-from .styling import style_attitudes
+from .styling import style_attitudes, style_candidates
 
 WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 MAX_AOI_DEG = 0.5      # v1 guard (~55 km/side) against accidental continent-sized fetches
@@ -60,6 +61,9 @@ class PlaneSightDockWidget(QgsDockWidget):
         self.canvas = iface.mapCanvas()
         self._task = None                       # aggregate task
         self._att_task = None                   # attitude task
+        self._detect_task = None                # detection task
+        self._det_fit_task = None               # fit-accepted task (Detect tab)
+        self._candidate_layer = None            # last candidate-trace layer
         self._pending_bbox = None
         self._drawn = None                      # QgsRectangle in canvas CRS, or None
         self._prev_tool = None
@@ -71,6 +75,7 @@ class PlaneSightDockWidget(QgsDockWidget):
     def _build_ui(self):
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_data_tab(), "Data")
+        self._tabs.addTab(self._build_detect_tab(), "Detect")
         self._tabs.addTab(self._build_attitude_tab(), "Strike/Dip")
         self._tabs.addTab(self._build_analyze_tab(), "Analyze")
         self._tabs.currentChanged.connect(self._on_tab_changed)
@@ -80,7 +85,9 @@ class PlaneSightDockWidget(QgsDockWidget):
 
     def _on_tab_changed(self, index):
         name = self._tabs.tabText(index)
-        if name == "Strike/Dip":
+        if name == "Detect":
+            self._default_detect_dem()
+        elif name == "Strike/Dip":
             self._apply_default_selections()
         elif name == "Analyze":
             self._default_attitude_layer()
@@ -111,6 +118,14 @@ class PlaneSightDockWidget(QgsDockWidget):
             for lyr in QgsProject.instance().mapLayers().values():
                 if lyr.type() == lyr.VectorLayer and lyr.name().startswith("PlaneSight attitudes"):
                     self.cmb_att.setLayer(lyr)
+                    break
+
+    def _default_detect_dem(self):
+        cur = self.cmb_detect_dem.currentLayer()
+        if cur is None or not cur.name().startswith("PlaneSight DEM"):
+            for lyr in QgsProject.instance().mapLayers().values():
+                if lyr.type() == lyr.RasterLayer and lyr.name().startswith("PlaneSight DEM"):
+                    self.cmb_detect_dem.setLayer(lyr)
                     break
 
     def _build_data_tab(self):
@@ -145,6 +160,35 @@ class PlaneSightDockWidget(QgsDockWidget):
         self.lbl_status = QLabel("")
         self.lbl_status.setWordWrap(True)
         layout.addWidget(self.lbl_status)
+        layout.addStretch(1)
+        return tab
+
+    def _build_detect_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.addWidget(QLabel("DEM layer (raster):"))
+        self.cmb_detect_dem = QgsMapLayerComboBox()
+        self.cmb_detect_dem.setFilters(QgsMapLayerProxyModel.RasterLayer)
+        layout.addWidget(self.cmb_detect_dem)
+        self.btn_detect = QPushButton("Detect candidate traces")
+        self.btn_detect.clicked.connect(self._on_detect)
+        layout.addWidget(self.btn_detect)
+        self.detect_progress = QProgressBar()
+        self.detect_progress.setRange(0, 0)     # busy indicator
+        self.detect_progress.hide()
+        layout.addWidget(self.detect_progress)
+        self.btn_fit_accepted = QPushButton("Compute strike/dip on accepted")
+        self.btn_fit_accepted.setToolTip(
+            "Fit accepted candidates (class not drainage/reject; or just the selected "
+            "features) -> a PlaneSight attitudes layer."
+        )
+        self.btn_fit_accepted.setEnabled(False)
+        self.btn_fit_accepted.clicked.connect(self._on_fit_accepted)
+        layout.addWidget(self.btn_fit_accepted)
+        self.detect_status = QLabel("Detect candidate traces, reclassify the 'class' field, "
+                                    "then fit the accepted ones.")
+        self.detect_status.setWordWrap(True)
+        layout.addWidget(self.detect_status)
         layout.addStretch(1)
         return tab
 
@@ -326,18 +370,9 @@ class PlaneSightDockWidget(QgsDockWidget):
         self.att_status.setText(f"Fitting strike/dip along {len(traces)} traces ...")
         QgsApplication.taskManager().addTask(self._att_task)
 
-    def _on_att_done(self):
-        atts = list(self._att_task.attitudes)
-        if not atts:
-            self.att_status.setText(
-                "0 attitudes fitted - do the trace layer and DEM cover the same area? "
-                "Traces sampled outside the DEM footprint are skipped."
-            )
-            self._reset_att_task()
-            return
-        layer = QgsVectorLayer(
-            f"Point?crs={self._att_crs.authid()}", "PlaneSight attitudes", "memory"
-        )
+    def _build_attitude_layer(self, attitudes, crs):
+        """Build + style a 'PlaneSight attitudes' point layer; returns the reliable count."""
+        layer = QgsVectorLayer(f"Point?crs={crs.authid()}", "PlaneSight attitudes", "memory")
         prov = layer.dataProvider()
         prov.addAttributes([
             QgsField("strike", QVariant.Double),
@@ -349,7 +384,7 @@ class PlaneSightDockWidget(QgsDockWidget):
         ])
         layer.updateFields()
         feats = []
-        for ap in atts:
+        for ap in attitudes:
             a = ap.attitude
             f = QgsFeature(layer.fields())
             f.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(ap.x, ap.y)))
@@ -365,7 +400,18 @@ class PlaneSightDockWidget(QgsDockWidget):
         except Exception:                       # noqa: BLE001 - styling is non-fatal
             pass
         QgsProject.instance().addMapLayer(layer)
-        n_rel = sum(ap.reliable for ap in atts)
+        return sum(ap.reliable for ap in attitudes)
+
+    def _on_att_done(self):
+        atts = list(self._att_task.attitudes)
+        if not atts:
+            self.att_status.setText(
+                "0 attitudes fitted - do the trace layer and DEM cover the same area? "
+                "Traces sampled outside the DEM footprint are skipped."
+            )
+            self._reset_att_task()
+            return
+        n_rel = self._build_attitude_layer(atts, self._att_crs)
         self.att_status.setText(
             f"Fitted {len(atts)} attitudes ({n_rel} reliable) -> 'PlaneSight attitudes'."
         )
@@ -380,6 +426,135 @@ class PlaneSightDockWidget(QgsDockWidget):
         self.att_progress.hide()
         self.btn_fit.setEnabled(True)
         self._att_task = None
+
+    # ---------------------------------------------------------- detect (M4)
+    def _on_detect(self):
+        if self._detect_task is not None:
+            return
+        dem_layer = self.cmb_detect_dem.currentLayer()
+        if dem_layer is None:
+            self.detect_status.setText("Pick a DEM layer.")
+            return
+        self._detect_task = DetectTask(dem_layer.source())
+        self._detect_task.taskCompleted.connect(self._on_detect_done)
+        self._detect_task.taskTerminated.connect(self._on_detect_failed)
+        self.btn_detect.setEnabled(False)
+        self.detect_progress.show()
+        self.detect_status.setText("Detecting candidate traces (first run loads scipy) ...")
+        QgsApplication.taskManager().addTask(self._detect_task)
+
+    def _on_detect_done(self):
+        cands = list(self._detect_task.candidates)
+        dem_layer = self.cmb_detect_dem.currentLayer()
+        crs = dem_layer.crs() if dem_layer is not None else WGS84
+        layer = QgsVectorLayer(
+            f"LineString?crs={crs.authid()}", "PlaneSight candidates", "memory"
+        )
+        prov = layer.dataProvider()
+        prov.addAttributes([
+            QgsField("class", QVariant.String),
+            QgsField("is_drainage", QVariant.Int),
+            QgsField("score", QVariant.Double),
+            QgsField("rank", QVariant.Double),
+            QgsField("length_m", QVariant.Double),
+        ])
+        layer.updateFields()
+        feats = []
+        n_drain = 0
+        for c in cands:
+            f = QgsFeature(layer.fields())
+            f.setGeometry(QgsGeometry.fromPolylineXY(
+                [QgsPointXY(float(x), float(y)) for x, y in c.geometry]
+            ))
+            n_drain += int(c.is_drainage)
+            f.setAttributes([
+                "drainage" if c.is_drainage else "contact", int(c.is_drainage),
+                float(c.score), float(c.rank), float(c.length),
+            ])
+            feats.append(f)
+        prov.addFeatures(feats)
+        layer.updateExtents()
+        try:
+            style_candidates(layer)
+        except Exception:                       # noqa: BLE001 - styling is non-fatal
+            pass
+        QgsProject.instance().addMapLayer(layer)
+        self._candidate_layer = layer
+        self.detect_status.setText(
+            f"{len(cands)} candidates ({n_drain} drainage-flagged) -> 'PlaneSight "
+            f"candidates'. Reclassify the 'class' field, then fit the accepted ones."
+        )
+        self.btn_fit_accepted.setEnabled(len(cands) > 0)
+        self._reset_detect_task()
+
+    def _on_detect_failed(self):
+        err = getattr(self._detect_task, "error", None)
+        self.detect_status.setText("Canceled." if err is None else f"Failed: {err}")
+        self._reset_detect_task()
+
+    def _reset_detect_task(self):
+        self.detect_progress.hide()
+        self.btn_detect.setEnabled(True)
+        self._detect_task = None
+
+    @staticmethod
+    def _polylines_world(layer, predicate=None):
+        """Collect (multi)line features as numpy (N,2) arrays; optional feature predicate."""
+        out = []
+        feats = (layer.selectedFeatures() if layer.selectedFeatureCount()
+                 else layer.getFeatures())
+        for feat in feats:
+            if predicate is not None and not predicate(feat):
+                continue
+            geom = feat.geometry()
+            if geom is None or geom.isEmpty():
+                continue
+            parts = geom.asMultiPolyline() if geom.isMultipart() else [geom.asPolyline()]
+            for part in parts:
+                if len(part) >= 2:
+                    out.append(np.array([(p.x(), p.y()) for p in part], dtype=float))
+        return out
+
+    def _on_fit_accepted(self):
+        if self._det_fit_task is not None:
+            return
+        layer = self._candidate_layer
+        dem_layer = self.cmb_detect_dem.currentLayer()
+        if layer is None or dem_layer is None:
+            self.detect_status.setText("Detect candidate traces and pick a DEM first.")
+            return
+        traces = self._polylines_world(
+            layer, predicate=lambda f: f["class"] not in ("drainage", "reject")
+        )
+        if not traces:
+            self.detect_status.setText("No accepted traces (all drainage/reject?).")
+            return
+        crs = dem_layer.crs()
+        task = AttitudeTask(traces, dem_layer.source())
+        self._det_fit_task = task
+
+        def _done():
+            atts = list(task.attitudes)
+            if atts:
+                n_rel = self._build_attitude_layer(atts, crs)
+                self.detect_status.setText(
+                    f"Fitted {len(atts)} attitudes ({n_rel} reliable) from accepted traces."
+                )
+            else:
+                self.detect_status.setText("0 attitudes (do the traces overlap the DEM?).")
+            self.btn_fit_accepted.setEnabled(True)
+            self._det_fit_task = None
+
+        def _failed():
+            self.detect_status.setText(f"Fit failed: {getattr(task, 'error', None)}")
+            self.btn_fit_accepted.setEnabled(True)
+            self._det_fit_task = None
+
+        task.taskCompleted.connect(_done)
+        task.taskTerminated.connect(_failed)
+        self.btn_fit_accepted.setEnabled(False)
+        self.detect_status.setText(f"Fitting {len(traces)} accepted traces ...")
+        QgsApplication.taskManager().addTask(task)
 
     # ------------------------------------------------------- analyze (M3)
     def _build_analyze_tab(self):
