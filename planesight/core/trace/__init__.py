@@ -12,12 +12,25 @@ from planesight.core.trace.livewire import (
     cost_to_all,
     least_cost_path,
 )
+from planesight.core.trace.penalties import drainage_penalty, orientation_incoherence
+from planesight.core.trace.snap import (
+    SnapField,
+    build_snap_field,
+    edge_mask,
+    snap_point,
+)
 
 __all__ = [
     "LiveWireField",
+    "SnapField",
     "backtrace",
     "build_cost_surface",
+    "build_snap_field",
     "cost_to_all",
     "curvature_magnitude",
+    "drainage_penalty",
+    "edge_mask",
     "least_cost_path",
+    "orientation_incoherence",
+    "snap_point",
 ]

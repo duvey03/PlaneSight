@@ -60,8 +60,11 @@ def build_cost_surface(
     ``cost = floor + w_edge*(1 - n(curv_mag)) + w_det*(1 - n(detector_resp))
              + w_drain*n(drainage_penalty) + w_orient*n(orient_incoherence)``
 
-    where ``n`` robust-normalises to [0, 1]. ``floor`` (> 0) keeps every step positive
-    for Dijkstra and bounds how cheap an ideal contact pixel gets. Terms whose input is
+    where ``n`` robust-normalises the raw edge signals (curvature, detector response) to
+    [0, 1]; the penalty terms (drainage, orientation-incoherence) are already calibrated
+    to [0, 1] by their builders and are only clipped (re-normalising a mostly-zero
+    penalty field would blow it up). ``floor`` (> 0) keeps every step positive for
+    Dijkstra and bounds how cheap an ideal contact pixel gets. Terms whose input is
     ``None`` (or weight 0) drop out - T0 passes only ``curv_mag``; T1 adds the rest.
     Invalid pixels (``valid is False``) are pushed to a large cost so the wire avoids
     nodata without being forbidden from crossing a concealed gap.
@@ -85,9 +88,9 @@ def build_cost_surface(
     if detector_resp is not None and w_det:
         cost += w_det * (1.0 - _norm01(detector_resp, valid))
     if drainage_penalty is not None and w_drain:
-        cost += w_drain * _norm01(drainage_penalty, valid)
+        cost += w_drain * np.clip(np.nan_to_num(drainage_penalty, nan=0.0), 0.0, 1.0)
     if orient_incoherence is not None and w_orient:
-        cost += w_orient * _norm01(orient_incoherence, valid)
+        cost += w_orient * np.clip(np.nan_to_num(orient_incoherence, nan=0.0), 0.0, 1.0)
     if valid is not None:
         cost = np.where(valid, cost, floor + _NODATA_PENALTY)
     return cost

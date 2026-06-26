@@ -12,9 +12,13 @@ import numpy as np
 from planesight.core.trace import (
     backtrace,
     build_cost_surface,
+    build_snap_field,
     cost_to_all,
     curvature_magnitude,
+    drainage_penalty,
     least_cost_path,
+    orientation_incoherence,
+    snap_point,
 )
 
 _CHEAP = 0.1
@@ -111,3 +115,54 @@ def test_curvature_magnitude_peaks_on_a_step():
     dem = 100.0 / (1.0 + np.exp(-(cc - 15) / 1.5))
     mag = curvature_magnitude(dem, px=30.0)
     assert mag[15, 13:18].max() > mag[15, :5].max() * 5
+
+
+# --- geology penalties (penalties.py) ---
+
+
+def _converging_valley(n=60):
+    """A steep V (floor = centre column) tilted south, so flow funnels to the thalweg."""
+    rr, cc = np.indices((n, n))
+    return 3.0 * np.abs(cc - n // 2) - 0.5 * rr      # cross-grad >> downhill -> converges
+
+
+def test_drainage_penalty_high_in_valley_low_on_ridge():
+    dem = _converging_valley()
+    pen = drainage_penalty(dem, downsample=1, min_accum_cells=20, decay_px=2.0)
+    assert pen.shape == dem.shape
+    assert pen.min() >= 0.0 and pen.max() <= 1.0
+    n = dem.shape[0]
+    # the thalweg (centre column, lower half) is penalised; the ridge edges are not
+    assert pen[n - 10:, n // 2].mean() > 0.5
+    assert pen[n - 10:, :3].mean() < 0.5
+
+
+def test_drainage_penalty_zero_without_channels():
+    flat = np.zeros((30, 30))
+    pen = drainage_penalty(flat, downsample=1, min_accum_cells=50)
+    assert np.all(pen == 0.0)
+
+
+def test_orientation_incoherence_low_on_oriented_high_on_isotropic():
+    # a strongly oriented ramp (gradient only in x) has a coherent fabric -> low
+    # incoherence; a constant field has no fabric -> incoherence ~1
+    _, cc = np.indices((40, 40))
+    ramp = cc.astype(float)
+    const = np.ones((40, 40))
+    inc_ramp = orientation_incoherence(ramp)
+    inc_const = orientation_incoherence(const)
+    assert inc_const.mean() > inc_ramp.mean()
+    assert 0.0 <= inc_ramp.min() and inc_ramp.max() <= 1.0
+
+
+# --- snap-on-click (snap.py) ---
+
+
+def test_snap_point_pulls_click_onto_nearest_edge():
+    strength = np.zeros((50, 50))
+    strength[25, 25] = 1.0                          # a single strong-contact pixel
+    field = build_snap_field(strength, budget=0.0005)  # k=1 -> just that pixel
+    assert snap_point(field, (27, 26), radius=5) == (25, 25)   # within radius -> snaps
+    assert snap_point(field, (25, 25), radius=5) == (25, 25)   # already on edge
+    assert snap_point(field, (45, 45), radius=5) is None       # too far -> concealed
+    assert snap_point(field, (-1, 0), radius=5) is None        # out of bounds
