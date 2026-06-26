@@ -5,7 +5,12 @@ GUI map tool can snap a "wire" along a geological contact between a few user cli
 numpy/scipy; PyQGIS/Qt live in the gui layer.
 """
 
-from planesight.core.trace.cost import build_cost_surface, curvature_magnitude
+from planesight.core.trace.cost import (
+    build_cost_surface,
+    contact_strength,
+    curvature_magnitude,
+    trace_cost_surface,
+)
 from planesight.core.trace.livewire import (
     LiveWireField,
     backtrace,
@@ -26,6 +31,7 @@ __all__ = [
     "backtrace",
     "build_cost_surface",
     "build_snap_field",
+    "contact_strength",
     "cost_to_all",
     "curvature_magnitude",
     "drainage_penalty",
@@ -33,4 +39,5 @@ __all__ = [
     "least_cost_path",
     "orientation_incoherence",
     "snap_point",
+    "trace_cost_surface",
 ]

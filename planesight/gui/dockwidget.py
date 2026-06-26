@@ -21,10 +21,12 @@ from qgis.core import (
     QgsFeature,
     QgsField,
     QgsGeometry,
+    QgsLineSymbol,
     QgsMapLayerProxyModel,
     QgsPointXY,
     QgsProject,
     QgsRasterLayer,
+    QgsSingleSymbolRenderer,
     QgsVectorLayer,
     QgsWkbTypes,
 )
@@ -32,11 +34,14 @@ from qgis.gui import QgsDockWidget, QgsMapLayerComboBox, QgsMapToolExtent
 from qgis.PyQt.QtCore import QVariant
 from qgis.PyQt.QtWidgets import (
     QCheckBox,
+    QDoubleSpinBox,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -45,8 +50,13 @@ from qgis.PyQt.QtWidgets import (
 from ..tasks.aggregate import AggregateTask
 from ..tasks.attitudes import AttitudeTask
 from ..tasks.detect import DetectTask
+from ..tasks.trace_cost import BuildCostTask
 from .stereonet_widget import StereonetWidget
 from .styling import style_attitudes, style_candidates
+
+# NOTE: .trace_tool imports core.trace (scipy) at module load, so it is imported LAZILY
+# inside _on_cost_done() - by then BuildCostTask has already loaded scipy off the UI
+# thread. Importing it here would cold-load scipy on plugin enable and freeze the UI.
 
 WGS84 = QgsCoordinateReferenceSystem("EPSG:4326")
 MAX_AOI_DEG = 0.5      # v1 guard (~55 km/side) against accidental continent-sized fetches
@@ -64,6 +74,10 @@ class PlaneSightDockWidget(QgsDockWidget):
         self._detect_task = None                # detection task
         self._det_fit_task = None               # fit-accepted task (Detect tab)
         self._candidate_layer = None            # last candidate-trace layer
+        self._cost_task = None                  # live-wire cost-surface build task
+        self._trace_tool = None                 # active LiveWireMapTool
+        self._traces_layer = None               # 'PlaneSight traces' (assisted tracing)
+        self._n_traced = 0                      # committed assisted traces
         self._pending_bbox = None
         self._drawn = None                      # QgsRectangle in canvas CRS, or None
         self._prev_tool = None
@@ -76,6 +90,7 @@ class PlaneSightDockWidget(QgsDockWidget):
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_data_tab(), "Data")
         self._tabs.addTab(self._build_detect_tab(), "Detect")
+        self._tabs.addTab(self._build_trace_tab(), "Trace")
         self._tabs.addTab(self._build_attitude_tab(), "Strike/Dip")
         self._tabs.addTab(self._build_analyze_tab(), "Analyze")
         self._tabs.currentChanged.connect(self._on_tab_changed)
@@ -87,6 +102,8 @@ class PlaneSightDockWidget(QgsDockWidget):
         name = self._tabs.tabText(index)
         if name == "Detect":
             self._default_detect_dem()
+        elif name == "Trace":
+            self._default_trace_dem()
         elif name == "Strike/Dip":
             self._apply_default_selections()
         elif name == "Analyze":
@@ -104,13 +121,22 @@ class PlaneSightDockWidget(QgsDockWidget):
                     self.cmb_dem.setLayer(lyr)
                     break
         cur_tr = self.cmb_traces.currentLayer()
-        if cur_tr is None or cur_tr.name().startswith("PlaneSight"):
+        if cur_tr is None or (cur_tr.name().startswith("PlaneSight")
+                              and not cur_tr.name().startswith("PlaneSight traces")):
+            # prefer the assisted-tracing output, else the first user (non-PlaneSight) line
+            pick = fallback = None
             for lyr in project.mapLayers().values():
-                if (lyr.type() == lyr.VectorLayer
-                        and QgsWkbTypes.geometryType(lyr.wkbType()) == QgsWkbTypes.LineGeometry
-                        and not lyr.name().startswith("PlaneSight")):
-                    self.cmb_traces.setLayer(lyr)
+                if (lyr.type() != lyr.VectorLayer
+                        or QgsWkbTypes.geometryType(lyr.wkbType()) != QgsWkbTypes.LineGeometry):
+                    continue
+                if lyr.name().startswith("PlaneSight traces"):
+                    pick = lyr
                     break
+                if not lyr.name().startswith("PlaneSight") and fallback is None:
+                    fallback = lyr
+            chosen = pick or fallback
+            if chosen is not None:
+                self.cmb_traces.setLayer(chosen)
 
     def _default_attitude_layer(self):
         cur = self.cmb_att.currentLayer()
@@ -126,6 +152,14 @@ class PlaneSightDockWidget(QgsDockWidget):
             for lyr in QgsProject.instance().mapLayers().values():
                 if lyr.type() == lyr.RasterLayer and lyr.name().startswith("PlaneSight DEM"):
                     self.cmb_detect_dem.setLayer(lyr)
+                    break
+
+    def _default_trace_dem(self):
+        cur = self.cmb_trace_dem.currentLayer()
+        if cur is None or not cur.name().startswith("PlaneSight DEM"):
+            for lyr in QgsProject.instance().mapLayers().values():
+                if lyr.type() == lyr.RasterLayer and lyr.name().startswith("PlaneSight DEM"):
+                    self.cmb_trace_dem.setLayer(lyr)
                     break
 
     def _build_data_tab(self):
@@ -189,6 +223,62 @@ class PlaneSightDockWidget(QgsDockWidget):
                                     "then fit the accepted ones.")
         self.detect_status.setWordWrap(True)
         layout.addWidget(self.detect_status)
+        layout.addStretch(1)
+        return tab
+
+    def _build_trace_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.addWidget(QLabel("DEM layer (raster):"))
+        self.cmb_trace_dem = QgsMapLayerComboBox()
+        self.cmb_trace_dem.setFilters(QgsMapLayerProxyModel.RasterLayer)
+        layout.addWidget(self.cmb_trace_dem)
+
+        tune = QGroupBox("Tracing")
+        tv = QVBoxLayout(tune)
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("Snap radius (px):"))
+        self.spin_snap = QSpinBox()
+        self.spin_snap.setRange(0, 25)
+        self.spin_snap.setValue(4)
+        row1.addWidget(self.spin_snap)
+        tv.addLayout(row1)
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Drainage avoidance:"))
+        self.spin_drain = QDoubleSpinBox()
+        self.spin_drain.setRange(0.0, 10.0)
+        self.spin_drain.setSingleStep(0.5)
+        self.spin_drain.setValue(3.0)
+        self.spin_drain.setToolTip("Weight of the creek-avoidance penalty in the cost "
+                                   "surface (0 = curvature only).")
+        row2.addWidget(self.spin_drain)
+        tv.addLayout(row2)
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("Max segment (px):"))
+        self.spin_margin = QSpinBox()
+        self.spin_margin.setRange(50, 1000)
+        self.spin_margin.setSingleStep(50)
+        self.spin_margin.setValue(200)
+        self.spin_margin.setToolTip("Reach of the live wire between clicks: the Dijkstra "
+                                    "search window around each anchor. Larger = longer "
+                                    "segments preview, but a heavier per-click solve.")
+        row3.addWidget(self.spin_margin)
+        tv.addLayout(row3)
+        layout.addWidget(tune)
+
+        self.btn_trace = QPushButton("Activate trace tool")
+        self.btn_trace.clicked.connect(self._on_activate_trace)
+        layout.addWidget(self.btn_trace)
+        self.trace_progress = QProgressBar()
+        self.trace_progress.setRange(0, 0)      # busy indicator while building the surface
+        self.trace_progress.hide()
+        layout.addWidget(self.trace_progress)
+        self.trace_status = QLabel(
+            "Pick a DEM, then Activate. Click to start a trace; move to preview the wire; "
+            "click to add a point; right-click or Enter to finish; Ctrl-click to free-draw."
+        )
+        self.trace_status.setWordWrap(True)
+        layout.addWidget(self.trace_status)
         layout.addStretch(1)
         return tab
 
@@ -555,6 +645,88 @@ class PlaneSightDockWidget(QgsDockWidget):
         self.btn_fit_accepted.setEnabled(False)
         self.detect_status.setText(f"Fitting {len(traces)} accepted traces ...")
         QgsApplication.taskManager().addTask(task)
+
+    # ----------------------------------------------------- assisted trace (T2)
+    def _on_activate_trace(self):
+        if self._cost_task is not None:
+            return
+        dem_layer = self.cmb_trace_dem.currentLayer()
+        if dem_layer is None:
+            self.trace_status.setText("Pick a DEM layer.")
+            return
+        self._cost_task = BuildCostTask(
+            dem_layer.source(), drainage_weight=self.spin_drain.value()
+        )
+        self._cost_task.taskCompleted.connect(self._on_cost_done)
+        self._cost_task.taskTerminated.connect(self._on_cost_failed)
+        self.btn_trace.setEnabled(False)
+        self.trace_progress.show()
+        self.trace_status.setText("Building cost surface (first run loads scipy) ...")
+        QgsApplication.taskManager().addTask(self._cost_task)
+
+    def _ensure_traces_layer(self, crs):
+        """Create (or reuse) the editable 'PlaneSight traces' line layer in ``crs``."""
+        existing = self._traces_layer
+        if existing is not None and existing.id() in QgsProject.instance().mapLayers():
+            if existing.crs().authid() == crs.authid():
+                return existing
+        layer = QgsVectorLayer(f"LineString?crs={crs.authid()}", "PlaneSight traces", "memory")
+        try:
+            sym = QgsLineSymbol.createSimple({"color": "#e01e1e", "width": "0.6"})
+            layer.setRenderer(QgsSingleSymbolRenderer(sym))
+        except Exception:                       # noqa: BLE001 - styling is non-fatal
+            pass
+        QgsProject.instance().addMapLayer(layer)
+        self._traces_layer = layer
+        self._n_traced = 0
+        if hasattr(self, "cmb_traces"):
+            self.cmb_traces.setLayer(layer)     # default Strike/Dip at the traced lines
+        return layer
+
+    def _commit_trace(self, world_pts):
+        """Append a finished assisted trace (DEM-CRS (x, y) points) to the traces layer."""
+        layer = self._traces_layer
+        if layer is None or len(world_pts) < 2:
+            return
+        feat = QgsFeature(layer.fields())
+        feat.setGeometry(QgsGeometry.fromPolylineXY(
+            [QgsPointXY(float(x), float(y)) for x, y in world_pts]
+        ))
+        layer.dataProvider().addFeatures([feat])
+        layer.updateExtents()
+        layer.triggerRepaint()
+        self._n_traced += 1
+        self.trace_status.setText(
+            f"{self._n_traced} trace(s) committed to 'PlaneSight traces'. Keep tracing, or "
+            "switch to Strike/Dip to measure them."
+        )
+
+    def _on_cost_done(self):
+        task = self._cost_task
+        dem_layer = self.cmb_trace_dem.currentLayer()
+        crs = dem_layer.crs() if dem_layer is not None else WGS84
+        self._ensure_traces_layer(crs)
+        from .trace_tool import LiveWireMapTool  # lazy: scipy already loaded off-thread
+        self._trace_tool = LiveWireMapTool(
+            self.canvas, task.cost, task.snap, task.gt, crs, self._commit_trace,
+            snap_radius=self.spin_snap.value(), margin=self.spin_margin.value(),
+        )
+        self.canvas.setMapTool(self._trace_tool)
+        self.trace_status.setText(
+            "Trace tool active. Click to start; move to preview the wire; click to add a "
+            "point; right-click or Enter to finish; Ctrl-click to free-draw."
+        )
+        self._reset_cost_task()
+
+    def _on_cost_failed(self):
+        err = getattr(self._cost_task, "error", None)
+        self.trace_status.setText("Canceled." if err is None else f"Failed: {err}")
+        self._reset_cost_task()
+
+    def _reset_cost_task(self):
+        self.trace_progress.hide()
+        self.btn_trace.setEnabled(True)
+        self._cost_task = None
 
     # ------------------------------------------------------- analyze (M3)
     def _build_analyze_tab(self):
