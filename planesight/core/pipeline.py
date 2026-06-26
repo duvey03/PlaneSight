@@ -93,6 +93,104 @@ def fit_traces(
     return out
 
 
+class CandidateTrace(NamedTuple):
+    """A detected candidate trace for the review gate (detector-agnostic).
+
+    ``geometry`` is (N, 2) world coords. ``is_drainage`` marks a drainage-flagged trace
+    (a review/rescue candidate). ``score`` is a normalized confidence in [0, 1] that the
+    trace is a genuine geological contact - the classical detector fills it from the
+    drainage signal; a future ML detector would fill it from its probability, so the
+    review UI never needs to change. ``rank`` is the review priority (higher = sooner).
+    ``length`` is in metres.
+    """
+
+    geometry: np.ndarray
+    is_drainage: bool
+    score: float
+    rank: float
+    length: float
+
+
+def _polyline_length(world):
+    w = np.asarray(world, dtype=float)
+    if w.shape[0] < 2:
+        return 0.0
+    return float(np.hypot(*np.diff(w, axis=0).T).sum())
+
+
+def _detect_and_link(
+    dem, *, res, bands, min_trace_pts, simplify_tol,
+    drain_downsample, drain_accum, drain_overlap,
+):
+    """Shared detection core: terrain stack -> detect -> drainage-flag -> link kept.
+
+    Returns ``(traces, flags, kept, linked)`` in PIXEL space. The scipy-heavy detection
+    imports are lazy (kept off the strike/dip-only path). Used by both detect_traces
+    (review gate, no fit) and detect_attitudes (full pipeline).
+    """
+    from planesight.core.derivatives import build_terrain_stack
+    from planesight.core.detect import ClassicalTraceDetector
+    from planesight.core.detect.drainage import flag_drainage
+    from planesight.core.detect.vectorize import link_polylines
+
+    valid = np.isfinite(dem)
+    _, terr = build_terrain_stack(dem, res, names=bands)
+    stack = np.stack([terr[b] for b in bands])
+    traces = ClassicalTraceDetector(
+        min_length=min_trace_pts, simplify_tol=simplify_tol
+    ).detect(stack)
+    flags = flag_drainage(
+        traces, dem, downsample=drain_downsample, min_accum_cells=drain_accum,
+        min_overlap_fraction=drain_overlap, valid_mask=valid,
+    )
+    kept = [t for t, f in zip(traces, flags) if not f.is_drainage]
+    linked = link_polylines(kept)   # AFTER drainage removal (planesight-61f contract)
+    return traces, flags, kept, linked
+
+
+def detect_traces(
+    dem: np.ndarray,
+    gt,
+    *,
+    res: float = 30.0,
+    bands=DEFAULT_BANDS,
+    min_trace_pts: int = 8,
+    simplify_tol: float = 1.0,
+    drain_downsample: int = 3,
+    drain_accum: int = 15,
+    drain_overlap: float = 0.5,
+) -> list:
+    """Detect candidate contact traces (detect -> drainage-flag -> link), WITHOUT fitting.
+
+    The detection step for the GUI review gate (M4): returns world-coordinate
+    :class:`CandidateTrace` objects so a human can accept/reject/classify before
+    strike/dip is fitted (via :func:`fit_traces`) on the accepted set. Kept (linked)
+    traces score 1.0; drainage-flagged traces carry a creek-vs-contact confidence
+    (1 - monotonicity) and the drainage rescue rank. Detector-agnostic output.
+    """
+    from planesight.core.detect.vectorize import pixels_to_world
+
+    traces, flags, _kept, linked = _detect_and_link(
+        dem, res=res, bands=bands, min_trace_pts=min_trace_pts, simplify_tol=simplify_tol,
+        drain_downsample=drain_downsample, drain_accum=drain_accum,
+        drain_overlap=drain_overlap,
+    )
+    out: list[CandidateTrace] = []
+    for tr_px in linked:                         # kept + linked -> high-confidence contacts
+        world = pixels_to_world(tr_px[:, ::-1], gt)
+        out.append(CandidateTrace(world, False, 1.0, 0.0, _polyline_length(world)))
+    for tr_px, f in zip(traces, flags):          # drainage-flagged -> review/rescue queue
+        if not f.is_drainage:
+            continue
+        world = pixels_to_world(tr_px[:, ::-1], gt)
+        mono = 1.0 if not np.isfinite(f.monotonicity) else f.monotonicity
+        out.append(CandidateTrace(
+            world, True, float(np.clip(1.0 - mono, 0.0, 1.0)),
+            float(f.rank), _polyline_length(world),
+        ))
+    return out
+
+
 def detect_attitudes(
     dem: np.ndarray,
     gt,
@@ -130,29 +228,13 @@ def detect_attitudes(
         delete) in `flags`/excluded from `linked`; `attitudes` come only from the
         kept+linked traces.
     """
-    # lazy (scipy-heavy) detection imports - see module note
-    from planesight.core.derivatives import build_terrain_stack
-    from planesight.core.detect import ClassicalTraceDetector
-    from planesight.core.detect.drainage import flag_drainage
-    from planesight.core.detect.vectorize import link_polylines, pixels_to_world
+    from planesight.core.detect.vectorize import pixels_to_world
 
-    valid = np.isfinite(dem)
-    _, terr = build_terrain_stack(dem, res, names=bands)
-    stack = np.stack([terr[b] for b in bands])
-
-    traces = ClassicalTraceDetector(
-        min_length=min_trace_pts, simplify_tol=simplify_tol
-    ).detect(stack)
-
-    flags = flag_drainage(
-        traces, dem, downsample=drain_downsample, min_accum_cells=drain_accum,
-        min_overlap_fraction=drain_overlap, valid_mask=valid,
+    traces, flags, kept, linked = _detect_and_link(
+        dem, res=res, bands=bands, min_trace_pts=min_trace_pts, simplify_tol=simplify_tol,
+        drain_downsample=drain_downsample, drain_accum=drain_accum,
+        drain_overlap=drain_overlap,
     )
-    kept = [t for t, f in zip(traces, flags) if not f.is_drainage]
-    # Continuity link runs AFTER drainage removal (the planesight-61f contract):
-    # linking before would reconnect creek fragments.
-    linked = link_polylines(kept)
-
     world_traces = [pixels_to_world(tr[:, ::-1], gt) for tr in linked]
     attitudes = fit_traces(
         world_traces, dem, gt, res=res, sigma_z=sigma_z, min_trace_pts=min_trace_pts,

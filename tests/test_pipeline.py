@@ -9,8 +9,10 @@ import numpy as np
 
 from planesight.core.pipeline import (
     AttitudePoint,
+    CandidateTrace,
     PipelineResult,
     detect_attitudes,
+    detect_traces,
     fit_traces,
 )
 
@@ -98,3 +100,20 @@ def test_fit_traces_skips_empty_and_too_short():
     dem = _east_dipping_dem()
     assert fit_traces([], dem, GT10, res=10.0) == []
     assert fit_traces([np.array([[10.0, -10.0]])], dem, GT10, res=10.0) == []
+
+
+# --- detect_traces (M4: review-gate detection without fitting) ---
+
+
+def test_detect_traces_returns_candidates():
+    dem = _escarpment_dem()
+    cands = detect_traces(dem, GT, res=30.0)
+    assert isinstance(cands, list) and len(cands) > 0
+    for c in cands:
+        assert isinstance(c, CandidateTrace)
+        assert c.geometry.ndim == 2 and c.geometry.shape[1] == 2
+        assert isinstance(c.is_drainage, bool)
+        assert 0.0 <= c.score <= 1.0          # detector-agnostic normalized confidence
+        assert c.rank >= 0.0 and c.length >= 0.0
+    # kept (non-drainage) candidates are high-confidence by construction
+    assert all(c.score == 1.0 for c in cands if not c.is_drainage)
