@@ -21,7 +21,9 @@ from planesight.core.derivatives import build_terrain_stack
 from planesight.core.geo import utm_epsg
 
 # Terrain layers most useful for interpreting geologic boundaries (hillshade first).
-DEFAULT_TERRAIN = ("hillshade", "slope", "profile_curvature")
+# Slope/curvature/TPI are also the inputs the assisted tracer's cost surface uses, so the
+# layers that aid auto-tracing are exactly the ones the user can see and toggle.
+DEFAULT_TERRAIN = ("hillshade", "slope", "profile_curvature", "curvature", "tpi")
 DERIV_NODATA = -9999.0
 
 
@@ -176,7 +178,21 @@ def aggregate_terrain(
         path = os.path.join(out_dir, f"{band}.tif")
         _write_gtiff(path, terr[band], gt, proj)
         specs.append(LayerSpec(path, f"PlaneSight {band}", band))
-        _emit(progress, 0.4 + 0.3 * (i + 1) / n, f"Wrote {band}")
+        _emit(progress, 0.4 + 0.25 * (i + 1) / n, f"Wrote {band}")
+
+    # Assisted-tracing previews: the crisp Canny edge network + the blended contact
+    # strength surface the live wire rides (same signals, made visible).
+    _emit(progress, 0.68, "Computing contact-strength + edges ...")
+    from planesight.core.trace.cost import contact_strength
+
+    valid = np.isfinite(dem)
+    strength, rails = contact_strength(dem, res, valid=valid)
+    cs_path = os.path.join(out_dir, "contact_strength.tif")
+    _write_gtiff(cs_path, np.where(valid, strength, DERIV_NODATA), gt, proj)
+    specs.append(LayerSpec(cs_path, "PlaneSight contact strength", "contact_strength"))
+    edge_path = os.path.join(out_dir, "canny_edges.tif")
+    _write_gtiff(edge_path, np.where(valid, rails.astype(float), DERIV_NODATA), gt, proj)
+    specs.append(LayerSpec(edge_path, "PlaneSight Canny edges", "canny_edges"))
 
     if include_s2:
         _emit(progress, 0.75, "Fetching Sentinel-2 true-color ...")

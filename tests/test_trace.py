@@ -13,12 +13,14 @@ from planesight.core.trace import (
     backtrace,
     build_cost_surface,
     build_snap_field,
+    contact_strength,
     cost_to_all,
     curvature_magnitude,
     drainage_penalty,
     least_cost_path,
     orientation_incoherence,
     snap_point,
+    trace_cost_surface,
 )
 
 _CHEAP = 0.1
@@ -156,6 +158,37 @@ def test_orientation_incoherence_low_on_oriented_high_on_isotropic():
 
 
 # --- snap-on-click (snap.py) ---
+
+
+def _escarpment(n=40):
+    """A tilted plane with a sharp sigmoid step down the centre column (a contact)."""
+    rr, cc = np.indices((n, n))
+    return (n - rr) * 0.5 * 30.0 + 120.0 / (1.0 + np.exp(-(cc - n // 2) / 1.5))
+
+
+def test_contact_strength_high_on_break_with_canny_rails():
+    dem = _escarpment()
+    strength, rails = contact_strength(dem, px=30.0)
+    assert strength.shape == dem.shape
+    assert strength.min() >= 0.0 and strength.max() <= 1.0
+    assert rails.dtype == bool and rails.any()          # crisp edges were found
+    c = dem.shape[1] // 2
+    # the step is stronger (cheaper to trace) than the flat tilt away from it
+    assert strength[:, c - 1:c + 2].mean() > strength[:, :4].mean()
+
+
+def test_trace_cost_surface_cheap_on_contact_and_positive():
+    dem = _escarpment()
+    cost, strength, rails = trace_cost_surface(dem, px=30.0, w_drain=0.0)
+    assert cost.shape == dem.shape
+    assert cost.min() > 0.0                              # Dijkstra needs positive weights
+    c = dem.shape[1] // 2
+    assert cost[:, c - 1:c + 2].mean() < cost[:, :4].mean()   # the contact is cheaper
+    # adding a drainage penalty only raises cost where the penalty is non-zero
+    pen = np.zeros_like(dem)
+    pen[5, :] = 1.0
+    cost2, _, _ = trace_cost_surface(dem, px=30.0, drainage=pen, w_drain=3.0)
+    assert cost2[5, 10] > cost[5, 10]
 
 
 def test_snap_point_pulls_click_onto_nearest_edge():

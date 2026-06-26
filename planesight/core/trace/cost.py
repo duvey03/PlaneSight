@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from planesight.core.derivatives.terrain import curvature
+from planesight.core.derivatives.terrain import curvature, slope, tpi
+from planesight.core.detect.canny import canny
 
 # Above the max in-bounds cost (floor + sum of weights), so paths route around nodata
 # rather than through it without forbidding it outright (concealed-segment fallback).
@@ -94,3 +95,93 @@ def build_cost_surface(
     if valid is not None:
         cost = np.where(valid, cost, floor + _NODATA_PENALTY)
     return cost
+
+
+def contact_strength(
+    dem: np.ndarray,
+    px: float,
+    py: float | None = None,
+    *,
+    valid: np.ndarray | None = None,
+    w_curv: float = 0.7,
+    w_slope: float = 0.15,
+    w_tpi: float = 0.15,
+    tpi_radius: int = 5,
+    canny_sigma: float = 1.0,
+    canny_low: float = 0.80,
+    canny_high: float = 0.92,
+    canny_level: float = 0.9,
+):
+    """Blended contact-likeness in [0, 1] (high = contact) + the Canny rail mask.
+
+    Combines the complementary DEM signals so the live wire has a strong, *continuous*
+    cheap network to follow (a curvature-only surface is too fragmented to auto-trace):
+
+    - a soft, continuous guidance term = weighted curvature + slope + |TPI| (each robust-
+      normalised), which pulls the wire toward breaks-in-slope/position and bridges gaps;
+    - crisp **Canny rails** on the curvature response (thin, connected edges), boosted to
+      ``canny_level`` so the wire rides them - this is what makes it auto-trace.
+
+    Args:
+        dem: 2D elevation array (metric CRS, NaN nodata).
+        px, py: pixel size(s) in metres.
+        valid: finite-data mask; ``None`` treats all pixels as valid.
+        w_curv, w_slope, w_tpi: weights of the soft guidance signals.
+        tpi_radius: TPI window radius (px).
+        canny_sigma, canny_low, canny_high: Canny scale + hysteresis quantiles.
+        canny_level: strength assigned to Canny-rail pixels (near 1 = near floor cost).
+
+    Returns:
+        ``(strength, rails)`` - the [0, 1] strength field and the boolean Canny mask
+        (the latter doubles as a viewable "edges" product).
+    """
+    prof = np.abs(curvature(dem, px, py, kind="profile"))
+    total = np.abs(curvature(dem, px, py, kind="total"))
+    slp = slope(dem, px, py)
+    tp = np.abs(tpi(dem, radius=tpi_radius))
+    wsum = w_curv + w_slope + w_tpi
+    soft = (w_curv * _norm01(prof, valid)
+            + w_slope * _norm01(slp, valid)
+            + w_tpi * _norm01(tp, valid)) / max(wsum, 1e-6)
+    rails = canny(prof + total, sigma=canny_sigma, low_quantile=canny_low,
+                  high_quantile=canny_high, valid_mask=valid)
+    strength = np.where(rails, np.maximum(soft, canny_level), soft)
+    if valid is not None:
+        strength = np.where(valid, strength, 0.0)
+    return np.clip(strength, 0.0, 1.0), rails
+
+
+def trace_cost_surface(
+    dem: np.ndarray,
+    px: float,
+    py: float | None = None,
+    *,
+    valid: np.ndarray | None = None,
+    drainage: np.ndarray | None = None,
+    w_edge: float = 1.0,
+    w_drain: float = 3.0,
+    floor: float = 0.1,
+    **strength_kwargs,
+):
+    """The live-wire cost surface from the blended contact strength (a NON-default option).
+
+    ``cost = floor + w_edge*(1 - contact_strength) + w_drain*drainage`` - low on the
+    crisp/continuous contact network, high on creeks and structureless ground.
+
+    NOTE: the cross-AOI sensitivity study (debug/trace_sensitivity_study.py) found this
+    blend consistently *loses* to plain curvature+drainage on trace adherence for
+    topographically-expressed contacts (extra cheap pixels let the wire drift onto
+    parallel edges). BuildCostTask therefore uses curvature+drainage. This entry point is
+    kept for the curvature-invisible case the ML probability map (T3) will target, where
+    the extra signals may earn their keep. ``strength``/``rails`` are also Data-tab
+    preview products (via :func:`contact_strength`).
+
+    Returns ``(cost, strength, rails)``.
+    """
+    strength, rails = contact_strength(dem, px, py, valid=valid, **strength_kwargs)
+    cost = floor + w_edge * (1.0 - strength)
+    if drainage is not None and w_drain:
+        cost = cost + w_drain * np.clip(np.nan_to_num(drainage, nan=0.0), 0.0, 1.0)
+    if valid is not None:
+        cost = np.where(valid, cost, floor + _NODATA_PENALTY)
+    return cost, strength, rails
